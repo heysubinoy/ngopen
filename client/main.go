@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -36,18 +37,44 @@ func sendMessage(conn net.Conn, message ProtocolMessage) error {
 }
 
 func main() {
-	conn, err := net.Dial("tcp", "localhost:9000")
+	protocol := flag.String("protocol", "http", "Protocol to use (e.g., http)")
+	hostname := flag.String("hostname", "", "Local hostname to expose")
+	authToken := flag.String("auth", "", "Authentication token")
+	// serverAddr := flag.String("server", "", "NGOpen server address")
+	// remoteAddr := flag.String("remote", "localhost:8080", "Remote address to forward to")
+	
+	remoteAddr := "localhost:8080" // Default remote address
+	serverAddr := "localhost:9000" // Default server address
+
+
+	flag.Parse()
+	// var serverAddr="localhost:9000"
+	// if *serverAddr == "" {
+	// 	log.Fatal("Server address is required. Use -server flag")
+	// }
+	if *hostname == "" {
+		log.Fatal("Hostname is required. Use -hostname flag")
+	}
+	if *protocol == "" {
+		log.Fatal("Protocol is required. Use -protocol flag")
+	}
+	if *authToken == "" {
+		log.Fatal("Authentication token is required. Use -auth flag")
+	}
+
+	conn, err := net.Dial("tcp", serverAddr)
 	if err != nil {
 		log.Fatal("Failed to connect to server:", err)
 	}
 	log.Println("Connected to server")
 
 	message := ProtocolMessage{
-		Protocol:   "http",
-		Hostname:   "localhost:3000",
-		AuthToken:  "XXXXXXXXXXXX",
-		RemoteAddr: "127.0.0.1:8080",
+		Protocol:   *protocol,
+		Hostname:   *hostname,
+		AuthToken:  *authToken,
+		RemoteAddr: remoteAddr,
 	}
+	fmt.Printf("Sending protocol message: %s\n", message)
 	if err := sendMessage(conn, message); err != nil {
 		log.Fatal("Failed to send protocol message:", err)
 	}

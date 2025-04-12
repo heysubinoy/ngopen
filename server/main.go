@@ -38,6 +38,16 @@ func (r *TunnelRegistry) Get(name string) (net.Conn, bool) {
 	return conn, ok
 }
 
+func (r *TunnelRegistry) Remove(name string) {
+	r.Lock()
+	defer r.Unlock()
+	if conn, ok := r.clients[name]; ok {
+		conn.Close()
+		delete(r.clients, name)
+		log.Printf("Tunnel client '%s' unregistered.\n", name)
+	}
+}
+
 func hashSHA1(s string) string {
 	hash := sha1.New()
 	hash.Write([]byte(s))
@@ -90,7 +100,7 @@ func startTunnelListener(registry *TunnelRegistry) {
 }
 
 func startHTTPServer(registry *TunnelRegistry) {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	go http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		target := r.Host
 		if target == "" {
 			http.Error(w, "Missing Host header", http.StatusBadRequest)
@@ -115,6 +125,7 @@ func startHTTPServer(registry *TunnelRegistry) {
 		err := r.Write(conn)
 		if err != nil {
 			log.Println("Failed to write to tunnel:", err)
+			registry.Remove(target)
 			http.Error(w, "Tunnel write failed", http.StatusBadGateway)
 			return
 		}
