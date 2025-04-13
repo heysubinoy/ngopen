@@ -1,4 +1,3 @@
-// client.go
 package main
 
 import (
@@ -6,102 +5,182 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
 )
 
-type ProtocolMessage struct {
-	Protocol   string
-	Hostname   string
-	AuthToken  string
-	RemoteAddr string
-}
-
-func sendMessage(conn net.Conn, message ProtocolMessage) error {
-	messageStr := fmt.Sprintf(
-		"PROTOCOL: %s\nHOSTNAME: %s\nREMOTEADDR: %s\nAUTHTOKEN: %s\n",
-		message.Protocol, message.Hostname, message.RemoteAddr, message.AuthToken,
-	)
-	payload := []byte(messageStr)
-	length := uint32(len(payload))
-
-	if err := binary.Write(conn, binary.BigEndian, length); err != nil {
-		return fmt.Errorf("failed to write length prefix: %w", err)
-	}
-
-	if _, err := conn.Write(payload); err != nil {
-		return fmt.Errorf("failed to write payload: %w", err)
-	}
-	return nil
-}
-
 func main() {
-	protocol := flag.String("protocol", "http", "Protocol to use (e.g., http)")
-	hostname := flag.String("hostname", "", "Local hostname to expose")
-	authToken := flag.String("auth", "", "Authentication token")
-	// serverAddr := flag.String("server", "", "NGOpen server address")
-	// remoteAddr := flag.String("remote", "localhost:8080", "Remote address to forward to")
-	
-	remoteAddr := "localhost:8080" // Default remote address
-	serverAddr := "localhost:9000" // Default server address
-
-
+	hostname := flag.String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
+	local := flag.String("local", "localhost:3000", "Local service to forward to")
+	server := flag.String("server", "localhost:9000", "Tunnel server address")
+	reconnectDelay := flag.Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	flag.Parse()
-	// var serverAddr="localhost:9000"
-	// if *serverAddr == "" {
-	// 	log.Fatal("Server address is required. Use -server flag")
-	// }
-	if *hostname == "" {
-		log.Fatal("Hostname is required. Use -hostname flag")
-	}
-	if *protocol == "" {
-		log.Fatal("Protocol is required. Use -protocol flag")
-	}
-	if *authToken == "" {
-		log.Fatal("Authentication token is required. Use -auth flag")
-	}
 
-	conn, err := net.Dial("tcp", serverAddr)
-	if err != nil {
-		log.Fatal("Failed to connect to server:", err)
-	}
-	log.Println("Connected to server")
+	// Setup signal handling for graceful shutdown
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	message := ProtocolMessage{
-		Protocol:   *protocol,
-		Hostname:   *hostname,
-		AuthToken:  *authToken,
-		RemoteAddr: remoteAddr,
-	}
-	fmt.Printf("Sending protocol message: %s\n", message)
-	if err := sendMessage(conn, message); err != nil {
-		log.Fatal("Failed to send protocol message:", err)
-	}
+	// Create a stop channel to terminate reconnection loop
+	stop := make(chan struct{})
 
-	reader := bufio.NewReader(conn)
+	go func() {
+		<-signals
+		log.Println("Shutting down client...")
+		close(stop)
+		// Give some time for clean disconnection before exiting
+		time.Sleep(250 * time.Millisecond)
+		os.Exit(0)
+	}()
 
+	// Connection loop with reconnect logic
 	for {
-		req, err := http.ReadRequest(reader)
+		select {
+		case <-stop:
+			return
+		default:
+			if assignedHostname, err := connectAndServe(*hostname, *local, *server); err != nil {
+				log.Printf("Connection error: %v. Reconnecting in %v...", err, *reconnectDelay)
+				select {
+				case <-stop:
+					return
+				case <-time.After(*reconnectDelay):
+					// Continue the loop to reconnect
+				}
+			} else {
+				// If we get here, connection closed without error (server closed it)
+				log.Printf("Server closed connection for hostname '%s'. Reconnecting...", assignedHostname)
+				select {
+				case <-stop:
+					return
+				case <-time.After(*reconnectDelay):
+					// Continue the loop to reconnect
+				}
+			}
+		}
+	}
+}
+
+func connectAndServe(hostname, local, server string) (string, error) {
+	conn, err := net.Dial("tcp", server)
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to server: %w", err)
+	}
+	defer conn.Close()
+
+	log.Printf("Connected to server at %s. Registering with hostname request: '%s'\n", server, hostname)
+
+	// Set connection deadlines to detect network issues more quickly
+	conn.SetDeadline(time.Time{}) // Clear any deadline
+
+	// Send hostname request (or AUTO) followed by newline
+	if _, err := fmt.Fprintf(conn, "%s\n", hostname); err != nil {
+		return "", fmt.Errorf("failed to send hostname request: %w", err)
+	}
+
+	// If hostname was AUTO, read the assigned hostname from server
+	assignedHostname := hostname
+	if hostname == "AUTO" {
+		reader := bufio.NewReader(conn)
+		assignedHostname, err = reader.ReadString('\n')
 		if err != nil {
-			log.Println("Error reading request:", err)
-			break
+			return "", fmt.Errorf("failed to read assigned hostname: %w", err)
+		}
+		assignedHostname = strings.TrimSpace(assignedHostname)
+		log.Printf("✨ Server assigned hostname: %s\n", assignedHostname)
+		log.Printf("🌐 Your service is now available at: http://%s\n", assignedHostname)
+	}
+
+	// Send periodic heartbeats to detect disconnection
+	heartbeatStop := make(chan struct{})
+	defer close(heartbeatStop)
+
+	// Main request handling loop
+	for {
+		// Set read deadline to detect broken connections
+		if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			return assignedHostname, fmt.Errorf("failed to set read deadline: %w", err)
+		}
+
+		// Read 4-byte length prefix
+		header := make([]byte, 4)
+		_, err := io.ReadFull(conn, header)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// This was just a timeout, continue the loop
+				continue
+			}
+			return assignedHostname, fmt.Errorf("error reading length: %w", err)
+		}
+
+		// Clear deadline after successful read
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			return assignedHostname, fmt.Errorf("failed to clear read deadline: %w", err)
+		}
+
+		reqLen := binary.BigEndian.Uint32(header)
+		reqBytes := make([]byte, reqLen)
+		_, err = io.ReadFull(conn, reqBytes)
+		if err != nil {
+			return assignedHostname, fmt.Errorf("error reading request: %w", err)
+		}
+
+		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(string(reqBytes))))
+		if err != nil {
+			log.Println("Error parsing request:", err)
+			continue
 		}
 
 		req.RequestURI = ""
 		req.URL.Scheme = "http"
-		req.URL.Host = "localhost:3000"
-		fmt.Printf("Forwarding request: %s %s\n", req.Method, req.URL.String())
+		req.URL.Host = local
+
+		log.Printf("Forwarding: %s %s\n", req.Method, req.URL.String())
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			log.Println("Failed to forward request:", err)
-			break
+			log.Println("Local forward failed:", err)
+			resp = &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(strings.NewReader("Failed to forward to local service")),
+				Header:     make(http.Header),
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+			}
 		}
 
-		if err := resp.Write(conn); err != nil {
-			log.Println("Failed to write response:", err)
-			break
+		var b strings.Builder
+		err = resp.Write(&b)
+		if err != nil {
+			log.Println("Error encoding response:", err)
+			continue
+		}
+		respBytes := []byte(b.String())
+
+		respLen := uint32(len(respBytes))
+		lengthHeader := make([]byte, 4)
+		binary.BigEndian.PutUint32(lengthHeader, respLen)
+
+		// Set write deadline for sending the response
+		if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return assignedHostname, fmt.Errorf("failed to set write deadline: %w", err)
+		}
+
+		_, err = conn.Write(append(lengthHeader, respBytes...))
+
+		// Clear deadline after write
+		if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+			return assignedHostname, fmt.Errorf("failed to clear write deadline: %w", err)
+		}
+
+		if err != nil {
+			return assignedHostname, fmt.Errorf("error sending response: %w", err)
 		}
 	}
 }
