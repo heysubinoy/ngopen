@@ -1,4 +1,4 @@
-module client
+module github.com/heysubinoy/ngopen
 
 go 1.23
 
