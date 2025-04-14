@@ -1,7 +1,9 @@
+// server/main.go
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,12 +14,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xtaci/smux"
 )
 
+// Client represents a tunnel client with an associated smux session.
 type Client struct {
-	Conn  net.Conn
-	Mutex sync.Mutex
-	Name  string
+	Conn    net.Conn
+	Session *smux.Session
+	Name    string
 }
 
 type TunnelRegistry struct {
@@ -35,7 +40,7 @@ func (r *TunnelRegistry) Add(name string, client *Client) {
 	r.Lock()
 	defer r.Unlock()
 	r.clients[name] = client
-	log.Printf("Tunnel client '%s' registered.\n", name)
+	log.Printf("Tunnel client '%s' registered.", name)
 }
 
 func (r *TunnelRegistry) Get(name string) (*Client, bool) {
@@ -50,32 +55,26 @@ func (r *TunnelRegistry) Remove(name string) {
 	defer r.Unlock()
 	if client, ok := r.clients[name]; ok {
 		client.Conn.Close()
+		client.Session.Close()
 		delete(r.clients, name)
-		log.Printf("Tunnel client '%s' unregistered.\n", name)
+		log.Printf("Tunnel client '%s' unregistered.", name)
 	}
 }
 
-// generateHostname creates a unique hostname for the client
 func generateHostname() string {
 	rand.Seed(time.Now().UnixNano())
 	adjectives := []string{"red", "blue", "happy", "swift", "clever", "brave", "kind", "wise", "calm", "bold"}
 	nouns := []string{"fox", "bear", "eagle", "wolf", "tiger", "lion", "hawk", "deer", "snake", "panda"}
-
-	adj := adjectives[rand.Intn(len(adjectives))]
-	noun := nouns[rand.Intn(len(nouns))]
-	number := rand.Intn(1000)
-
-	return fmt.Sprintf("%s-%s-%d", adj, noun, number)
+	return fmt.Sprintf("%s-%s-%d.n.sbn.lol", adjectives[rand.Intn(len(adjectives))], nouns[rand.Intn(len(nouns))], rand.Intn(1000))
 }
 
-// --- Multiplexed Tunnel Listener ---
-
+// startTunnelListener listens for new tunnel client connections.
 func startTunnelListener(registry *TunnelRegistry) {
 	ln, err := net.Listen("tcp", ":9000")
 	if err != nil {
 		log.Fatal("Tunnel listen error:", err)
 	}
-	log.Println("Listening for tunnel clients on :9000...")
+	log.Println("Listening for tunnel clients on :9000…")
 
 	for {
 		conn, err := ln.Accept()
@@ -83,7 +82,6 @@ func startTunnelListener(registry *TunnelRegistry) {
 			log.Println("Accept error:", err)
 			continue
 		}
-
 		go func(c net.Conn) {
 			reader := bufio.NewReader(c)
 			clientMsg, err := reader.ReadString('\n')
@@ -93,15 +91,10 @@ func startTunnelListener(registry *TunnelRegistry) {
 				return
 			}
 			clientMsg = strings.TrimSpace(clientMsg)
-
-			// If client sends "AUTO", generate hostname
-			// Otherwise use provided name
 			var name string
 			if clientMsg == "AUTO" {
-				name = generateHostname()+":8080"
-				// Send the generated hostname back to the client
-				_, err = fmt.Fprintf(c, "%s\n", name)
-				if err != nil {
+				name = generateHostname()
+				if _, err := fmt.Fprintf(c, "%s\n", name); err != nil {
 					log.Println("Failed to send hostname to client:", err)
 					c.Close()
 					return
@@ -109,116 +102,135 @@ func startTunnelListener(registry *TunnelRegistry) {
 			} else {
 				name = clientMsg
 			}
-
 			if name == "" {
 				log.Println("Empty client name, closing.")
 				c.Close()
 				return
 			}
 
-			client := &Client{
-				Conn:  c,
-				Name:  name,
-				Mutex: sync.Mutex{},
+			// Create a smux session for this client connection.
+			session, err := smux.Server(c, nil)
+			if err != nil {
+				log.Println("Failed to create smux session:", err)
+				c.Close()
+				return
 			}
 
+			client := &Client{
+				Conn:    c,
+				Session: session,
+				Name:    name,
+			}
 			registry.Add(name, client)
+			log.Printf("Tunnel client '%s' connected.", name)
 
-			// No read loop here. Tunnel is passive; it replies to request proxies.
-
-			log.Printf("Tunnel client '%s' connected.\n", name)
+			// Block until the session is closed.
+			<-session.CloseChan()
+			registry.Remove(name)
 		}(conn)
 	}
 }
 
-// --- Framing Utils ---
-
-func writeFramedRequest(conn net.Conn, req *http.Request) error {
-	var buf strings.Builder
-	err := req.Write(&buf)
-	if err != nil {
+// writeFramedRequest writes an HTTP request into the given stream.
+func writeFramedRequest(stream net.Conn, req *http.Request) error {
+	var buf bytes.Buffer
+	if err := req.Write(&buf); err != nil {
 		return err
 	}
-	data := []byte(buf.String())
-
+	data := buf.Bytes()
 	length := uint32(len(data))
 	header := make([]byte, 4)
 	binary.BigEndian.PutUint32(header, length)
-
-	_, err = conn.Write(append(header, data...))
+	_, err := stream.Write(append(header, data...))
 	return err
 }
 
-func readFramedResponse(conn net.Conn, req *http.Request) (*http.Response, error) {
+// readFramedResponse reads a framed HTTP response from the given stream.
+func readFramedResponse(stream net.Conn, req *http.Request) (*http.Response, error) {
 	header := make([]byte, 4)
-	_, err := io.ReadFull(conn, header)
-	if err != nil {
+	if _, err := io.ReadFull(stream, header); err != nil {
 		return nil, err
 	}
-
 	length := binary.BigEndian.Uint32(header)
 	body := make([]byte, length)
-	_, err = io.ReadFull(conn, body)
-	if err != nil {
+	if _, err := io.ReadFull(stream, body); err != nil {
 		return nil, err
 	}
-
-	return http.ReadResponse(bufio.NewReader(strings.NewReader(string(body))), req)
+	return http.ReadResponse(bufio.NewReader(bytes.NewReader(body)), req)
 }
 
-// --- HTTP Server Side ---
-
+// startHTTPServer starts an HTTP server that, on each request, opens a new smux stream.
 func startHTTPServer(registry *TunnelRegistry) {
+
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		target := r.Host
 		if target == "" {
 			http.Error(w, "Missing Host header", http.StatusBadRequest)
 			return
 		}
-		log.Printf("Incoming request for %s\n", target)
+		// Filter out hot module reload chatter.
+		if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
+			log.Printf("Request: %s %s", r.Method, r.URL.Path)
+		}
 
-		client, ok := registry.Get(target)
+		tunnelClient, ok := registry.Get(target)
 		if !ok {
 			http.Error(w, "Tunnel client not connected", http.StatusServiceUnavailable)
 			return
 		}
 
-		client.Mutex.Lock()
-		defer client.Mutex.Unlock()
-
-		err := writeFramedRequest(client.Conn, r)
+		// Open a new stream for this HTTP request.
+		stream, err := tunnelClient.Session.OpenStream()
 		if err != nil {
-			log.Println("Failed to write to tunnel:", err)
+			log.Println("Failed to open smux stream:", err)
+			registry.Remove(target)
+			http.Error(w, "Tunnel stream open failed", http.StatusBadGateway)
+			return
+		}
+		defer stream.Close()
+
+		// Write the request over the stream.
+		stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if err := writeFramedRequest(stream, r); err != nil {
+			log.Println("Failed to write to tunnel stream:", err)
 			registry.Remove(target)
 			http.Error(w, "Tunnel write failed", http.StatusBadGateway)
 			return
 		}
-
-		resp, err := readFramedResponse(client.Conn, r)
+		stream.SetReadDeadline(time.Now().Add(30 * time.Second))
+		resp, err := readFramedResponse(stream, r)
 		if err != nil {
-			log.Println("Failed to read from tunnel:", err)
+			log.Println("Failed to read from tunnel stream:", err)
 			registry.Remove(target)
 			http.Error(w, "Tunnel response failed", http.StatusBadGateway)
 			return
 		}
 		defer resp.Body.Close()
+		stream.SetWriteDeadline(time.Time{})
+		stream.SetReadDeadline(time.Time{})
 
+		// Copy response headers and body.
 		for k, vals := range resp.Header {
-			for _, v := range vals {
-				w.Header().Add(k, v)
-			}
+			w.Header()[k] = vals
 		}
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	})
 
+	server := &http.Server{
+		Addr:           ":80",
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+
 	log.Println("HTTP server listening on :80")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(server.ListenAndServe())
 }
 
 func main() {
 	registry := NewTunnelRegistry()
-
 	go startTunnelListener(registry)
 	startHTTPServer(registry)
 }
