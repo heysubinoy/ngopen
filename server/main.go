@@ -65,7 +65,7 @@ func generateHostname() string {
 	rand.Seed(time.Now().UnixNano())
 	adjectives := []string{"red", "blue", "happy", "swift", "clever", "brave", "kind", "wise", "calm", "bold"}
 	nouns := []string{"fox", "bear", "eagle", "wolf", "tiger", "lion", "hawk", "deer", "snake", "panda"}
-	return fmt.Sprintf("%s-%s-%d:8080", adjectives[rand.Intn(len(adjectives))], nouns[rand.Intn(len(nouns))], rand.Intn(1000))
+	return fmt.Sprintf("%s-%s-%d.n.sbn.lol", adjectives[rand.Intn(len(adjectives))], nouns[rand.Intn(len(nouns))], rand.Intn(1000))
 }
 
 // startTunnelListener listens for new tunnel client connections.
@@ -161,15 +161,7 @@ func readFramedResponse(stream net.Conn, req *http.Request) (*http.Response, err
 
 // startHTTPServer starts an HTTP server that, on each request, opens a new smux stream.
 func startHTTPServer(registry *TunnelRegistry) {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-	}
-	clientHTTP := &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
+
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		target := r.Host
@@ -227,13 +219,13 @@ func startHTTPServer(registry *TunnelRegistry) {
 	})
 
 	server := &http.Server{
-		Addr:           ":8080",
+		Addr:           ":80",
 		ReadTimeout:    30 * time.Second,
 		WriteTimeout:   30 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	log.Println("HTTP server listening on :8080")
+	log.Println("HTTP server listening on :80")
 	log.Fatal(server.ListenAndServe())
 }
 
