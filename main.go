@@ -36,7 +36,7 @@ func logError(format string, v ...interface{}) {
 func main() {
 	hostname := flag.String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
 	local := flag.String("local", "", "Local service to forward to")
-	server := flag.String("server", "172.207.27.146:9000", "Tunnel server address")
+	server := flag.String("server", "tunnel.n.sbn.lol:9000", "Tunnel server address")
 	reconnectDelay := flag.Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	preserveClientIP := flag.Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
 	authToken := flag.String("auth", "", "Authentication token for server")
@@ -118,7 +118,7 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	}
 
 	assignedHostname := hostname
-	reader:=bufio.NewReader(conn)// Read the server's response to the auth token
+	reader := bufio.NewReader(conn) // Read the server's response to the auth token
 	authResponse, err := reader.ReadString('\n')
 	if err != nil {
 		return "", fmt.Errorf("failed to read auth response: %w", err)
@@ -126,9 +126,12 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	authResponse = strings.TrimSpace(authResponse)
 	if authResponse != "Valid" {
 		logError("Invalid auth token: %s", authToken)
-		// stop <- syscall.SIGINT // Trigger graceful shutdown
-		// close(stop)
-		return "", fmt.Errorf("invalid auth token: %s", authToken)
+		 // Print a helpful message before exiting
+		fmt.Println("\033[31m❌ Authentication failed: Invalid auth token\033[0m")
+		fmt.Println("\033[31m❌ Please check your token and try again\033[0m")
+		// Exit with error code
+		os.Exit(1)
+		return "", fmt.Errorf("invalid auth token") // This won't execute, but keeps for consistency
 	}
 
 	if hostname == "AUTO" {
