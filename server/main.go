@@ -164,61 +164,63 @@ func startHTTPServer(registry *TunnelRegistry) {
 
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		target := r.Host
-		if target == "" {
-			http.Error(w, "Missing Host header", http.StatusBadRequest)
-			return
-		}
-		// Filter out hot module reload chatter.
-		if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
-			log.Printf("Request: %s %s", r.Method, r.URL.Path)
-		}
+		go func() {
+			target := r.Host
+			if target == "" {
+				http.Error(w, "Missing Host header", http.StatusBadRequest)
+				return
+			}
+			// Filter out hot module reload chatter.
+			if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
+				log.Printf("Request: %s %s", r.Method, r.URL.Path)
+			}
 
-		tunnelClient, ok := registry.Get(target)
-		if !ok {
-			http.Error(w, "Tunnel client not connected", http.StatusServiceUnavailable)
-			return
-		}
+			tunnelClient, ok := registry.Get(target)
+			if !ok {
+				http.Error(w, "Tunnel client not connected", http.StatusServiceUnavailable)
+				return
+			}
 
-		// Open a new stream for this HTTP request.
-		stream, err := tunnelClient.Session.OpenStream()
-		if err != nil {
-			log.Println("Failed to open smux stream:", err)
-			registry.Remove(target)
-			http.Error(w, "Tunnel stream open failed", http.StatusBadGateway)
-			return
-		}
-		defer stream.Close()
+			// Open a new stream for this HTTP request.
+			stream, err := tunnelClient.Session.OpenStream()
+			if err != nil {
+				log.Println("Failed to open smux stream:", err)
+				registry.Remove(target)
+				http.Error(w, "Tunnel stream open failed", http.StatusBadGateway)
+				return
+			}
+			defer stream.Close()
 
-		// Write the request over the stream.
-		stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		if err := writeFramedRequest(stream, r); err != nil {
-			log.Println("Failed to write to tunnel stream:", err)
-			registry.Remove(target)
-			http.Error(w, "Tunnel write failed", http.StatusBadGateway)
-			return
-		}
-		stream.SetReadDeadline(time.Now().Add(30 * time.Second))
-		resp, err := readFramedResponse(stream, r)
-		if err != nil {
-			log.Println("Failed to read from tunnel stream:", err)
-			registry.Remove(target)
-			http.Error(w, "Tunnel response failed", http.StatusBadGateway)
-			return
-		}
-		defer resp.Body.Close()
-		stream.SetWriteDeadline(time.Time{})
-		stream.SetReadDeadline(time.Time{})
+			// Write the request over the stream.
+			stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if err := writeFramedRequest(stream, r); err != nil {
+				log.Println("Failed to write to tunnel stream:", err)
+				registry.Remove(target)
+				http.Error(w, "Tunnel write failed", http.StatusBadGateway)
+				return
+			}
+			stream.SetReadDeadline(time.Now().Add(30 * time.Second))
+			resp, err := readFramedResponse(stream, r)
+			if err != nil {
+				log.Println("Failed to read from tunnel stream:", err)
+				registry.Remove(target)
+				http.Error(w, "Tunnel response failed", http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+			stream.SetWriteDeadline(time.Time{})
+			stream.SetReadDeadline(time.Time{})
 
-		// Copy response headers and body.
-		for k, vals := range resp.Header {
-			w.Header()[k] = vals
-		}
-		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+			// Copy response headers and body.
+			for k, vals := range resp.Header {
+				w.Header()[k] = vals
+			}
+			w.WriteHeader(resp.StatusCode)
+			io.Copy(w, resp.Body)
+		}()
 	})
 
-	go func() {
+	// go func() {
 		server := &http.Server{
 			Addr:           ":443",
 			ReadTimeout:    30 * time.Second,
@@ -228,17 +230,17 @@ func startHTTPServer(registry *TunnelRegistry) {
 
 		log.Println("HTTPS server listening on :443")
 		log.Fatal(server.ListenAndServeTLS("/etc/letsencrypt/live/n.sbn.lol/fullchain.pem", "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"))
-	}()
+	// }()
 
-	httpServer := &http.Server{
-		Addr:           ":80",
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
+	// httpServer := &http.Server{
+	// 	Addr:           ":80",
+	// 	ReadTimeout:    30 * time.Second,
+	// 	WriteTimeout:   30 * time.Second,
+	// 	MaxHeaderBytes: 1 << 20,
+	// }
 
-	log.Println("HTTP server listening on :80")
-	log.Fatal(httpServer.ListenAndServe())
+	// log.Println("HTTP server listening on :80")
+	// log.Fatal(httpServer.ListenAndServe())
 }
 
 func main() {
