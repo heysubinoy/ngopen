@@ -57,22 +57,32 @@ func main() {
 		os.Exit(0)
 	}()
 
+	// Track the last assigned hostname to preserve it across reconnections
+	lastAssignedHostname := *hostname
+
 	// Connection loop with reconnect logic
 	for {
 		select {
 		case <-stop:
 			return
 		default:
-			assignedHostname, err := connectAndServe(*hostname, *local, *server, *preserveClientIP)
+			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP)
 			if err != nil {
-				logError("Connection error: %v. Reconnecting in %v...", err, *reconnectDelay)
+				if assignedHostname != "" {
+					// If we got a hostname before the error, preserve it
+					lastAssignedHostname = assignedHostname
+				}
+				logError("Connection error: %v. Reconnecting to %s in %v...", 
+					err, lastAssignedHostname, *reconnectDelay)
 				select {
 				case <-stop:
 					return
 				case <-time.After(*reconnectDelay):
 				}
-			} else {
-				logInfo("Server closed connection for hostname '%s'. Reconnecting...", assignedHostname)
+			} else if assignedHostname != "" {
+				// If connection closed normally but we had a hostname, preserve it
+				lastAssignedHostname = assignedHostname
+				logInfo("Server closed connection for hostname '%s'. Reconnecting...", lastAssignedHostname)
 				select {
 				case <-stop:
 					return
@@ -90,12 +100,19 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool) (str
 	}
 	defer conn.Close()
 
+	authToken := flag.String("auth-token", os.Getenv("NGOPEN_AUTH_TOKEN"), "Authentication token for server")
+	flag.Parse()
+
+	if *authToken == "" {
+		return "", fmt.Errorf("authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
+	}
+
 	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{}) // clear any deadlines
 
-	// Send hostname request followed by newline
-	if _, err := fmt.Fprintf(conn, "%s\n", hostname); err != nil {
-		return "", fmt.Errorf("failed to send hostname request: %w", err)
+	// Send auth token followed by hostname request
+	if _, err := fmt.Fprintf(conn, "%s\n%s\n", *authToken, hostname); err != nil {
+		return "", fmt.Errorf("failed to send auth token and hostname request: %w", err)
 	}
 
 	assignedHostname := hostname

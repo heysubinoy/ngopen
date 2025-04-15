@@ -1,0 +1,5 @@
+nohup: ignoring input
+2025/04/15 04:39:05 HTTP server listening on :80
+2025/04/15 04:39:05 HTTPS server listening on :443
+2025/04/15 04:39:05 listen tcp :80: bind: permission denied
+2025/04/15 04:39:05 listen tcp :443: bind: permission denied
