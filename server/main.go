@@ -162,22 +162,26 @@ func readFramedResponse(stream net.Conn, req *http.Request) (*http.Response, err
 // startHTTPServer starts an HTTP server that, on each request, opens a new smux stream.
 func startHTTPServer(registry *TunnelRegistry) {
 
-
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Create response objects to pass to the goroutine
+		rw := w
+		req := r.Clone(r.Context())
+
+		// Handle each request in a separate goroutine
 		go func() {
-			target := r.Host
+			target := req.Host
 			if target == "" {
-				http.Error(w, "Missing Host header", http.StatusBadRequest)
+				http.Error(rw, "Missing Host header", http.StatusBadRequest)
 				return
 			}
 			// Filter out hot module reload chatter.
-			if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
-				log.Printf("Request: %s %s", r.Method, r.URL.Path)
+			if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
+				log.Printf("Request: %s %s", req.Method, req.URL.Path)
 			}
 
 			tunnelClient, ok := registry.Get(target)
 			if !ok {
-				http.Error(w, "Tunnel client not connected", http.StatusServiceUnavailable)
+				http.Error(rw, "Tunnel client not connected", http.StatusServiceUnavailable)
 				return
 			}
 
@@ -186,25 +190,25 @@ func startHTTPServer(registry *TunnelRegistry) {
 			if err != nil {
 				log.Println("Failed to open smux stream:", err)
 				registry.Remove(target)
-				http.Error(w, "Tunnel stream open failed", http.StatusBadGateway)
+				http.Error(rw, "Tunnel stream open failed", http.StatusBadGateway)
 				return
 			}
 			defer stream.Close()
 
 			// Write the request over the stream.
 			stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if err := writeFramedRequest(stream, r); err != nil {
+			if err := writeFramedRequest(stream, req); err != nil {
 				log.Println("Failed to write to tunnel stream:", err)
 				registry.Remove(target)
-				http.Error(w, "Tunnel write failed", http.StatusBadGateway)
+				http.Error(rw, "Tunnel write failed", http.StatusBadGateway)
 				return
 			}
 			stream.SetReadDeadline(time.Now().Add(30 * time.Second))
-			resp, err := readFramedResponse(stream, r)
+			resp, err := readFramedResponse(stream, req)
 			if err != nil {
 				log.Println("Failed to read from tunnel stream:", err)
 				registry.Remove(target)
-				http.Error(w, "Tunnel response failed", http.StatusBadGateway)
+				http.Error(rw, "Tunnel response failed", http.StatusBadGateway)
 				return
 			}
 			defer resp.Body.Close()
@@ -213,34 +217,22 @@ func startHTTPServer(registry *TunnelRegistry) {
 
 			// Copy response headers and body.
 			for k, vals := range resp.Header {
-				w.Header()[k] = vals
+				rw.Header()[k] = vals
 			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
+			rw.WriteHeader(resp.StatusCode)
+			io.Copy(rw, resp.Body)
 		}()
 	})
 
-	// go func() {
-		server := &http.Server{
-			Addr:           ":443",
-			ReadTimeout:    30 * time.Second,
-			WriteTimeout:   30 * time.Second,
-			MaxHeaderBytes: 1 << 20,
-		}
+	server := &http.Server{
+		Addr:           ":443",
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
 
-		log.Println("HTTPS server listening on :443")
-		log.Fatal(server.ListenAndServeTLS("/etc/letsencrypt/live/n.sbn.lol/fullchain.pem", "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"))
-	// }()
-
-	// httpServer := &http.Server{
-	// 	Addr:           ":80",
-	// 	ReadTimeout:    30 * time.Second,
-	// 	WriteTimeout:   30 * time.Second,
-	// 	MaxHeaderBytes: 1 << 20,
-	// }
-
-	// log.Println("HTTP server listening on :80")
-	// log.Fatal(httpServer.ListenAndServe())
+	log.Println("HTTPS server listening on :443")
+	log.Fatal(server.ListenAndServeTLS("/etc/letsencrypt/live/n.sbn.lol/fullchain.pem", "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"))
 }
 
 func main() {
