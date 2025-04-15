@@ -118,6 +118,19 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	}
 
 	assignedHostname := hostname
+	reader:=bufio.NewReader(conn)// Read the server's response to the auth token
+	authResponse, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("failed to read auth response: %w", err)
+	}
+	authResponse = strings.TrimSpace(authResponse)
+	if authResponse != "Valid" {
+		logError("Invalid auth token: %s", authToken)
+		// stop <- syscall.SIGINT // Trigger graceful shutdown
+		// close(stop)
+		return "", fmt.Errorf("invalid auth token: %s", authToken)
+	}
+
 	if hostname == "AUTO" {
 		reader := bufio.NewReader(conn)
 		assignedHostname, err = reader.ReadString('\n')
@@ -130,13 +143,13 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
 		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36mlocalhost:%s\033[0m\n", 
 			assignedHostname, strings.TrimPrefix(local, "localhost:"))
-		fmt.Println("\033[32m✓ Ready for connections\033[0m\n")
+		fmt.Println("\033[32m✓ Ready for connections\033[0m")
 	} else {
 		// Cool format for custom hostname with colors
 		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
 		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36m%s\033[0m\n", 
 			hostname, local)
-		fmt.Println("\033[32m✓ Ready for connections\033[0m\n")
+		fmt.Println("\033[32m✓ Ready for connections\033[0m")
 	}
 
 	// Create a smux client session
