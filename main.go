@@ -20,14 +20,30 @@ import (
 	"github.com/xtaci/smux"
 )
 
+// Custom logger with emoji prefixes
+func logSuccess(format string, v ...interface{}) {
+	log.Printf("✓ "+format, v...)
+}
+
+func logInfo(format string, v ...interface{}) {
+	log.Printf("ℹ️ "+format, v...)
+}
+
+func logError(format string, v ...interface{}) {
+	log.Printf("❌ "+format, v...)
+}
+
 func main() {
 	hostname := flag.String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
-	local := flag.String("local", "localhost:3000", "Local service to forward to")
+	local := flag.String("local", "", "Local service to forward to")
 	server := flag.String("server", "172.207.27.146:9000", "Tunnel server address")
 	reconnectDelay := flag.Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	preserveClientIP := flag.Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
 	flag.Parse()
-
+	if *hostname == "" || *local == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
 	// Setup graceful shutdown
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -35,7 +51,7 @@ func main() {
 
 	go func() {
 		<-signals
-		log.Println("Shutting down client…")
+		logInfo("Shutting down client...")
 		close(stop)
 		time.Sleep(250 * time.Millisecond)
 		os.Exit(0)
@@ -49,14 +65,14 @@ func main() {
 		default:
 			assignedHostname, err := connectAndServe(*hostname, *local, *server, *preserveClientIP)
 			if err != nil {
-				log.Printf("Connection error: %v. Reconnecting in %v…", err, *reconnectDelay)
+				logError("Connection error: %v. Reconnecting in %v...", err, *reconnectDelay)
 				select {
 				case <-stop:
 					return
 				case <-time.After(*reconnectDelay):
 				}
 			} else {
-				log.Printf("Server closed connection for hostname '%s'. Reconnecting...", assignedHostname)
+				logInfo("Server closed connection for hostname '%s'. Reconnecting...", assignedHostname)
 				select {
 				case <-stop:
 					return
@@ -74,7 +90,7 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool) (str
 	}
 	defer conn.Close()
 
-	log.Printf("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
+	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{}) // clear any deadlines
 
 	// Send hostname request followed by newline
@@ -90,8 +106,16 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool) (str
 			return "", fmt.Errorf("failed to read assigned hostname: %w", err)
 		}
 		assignedHostname = strings.TrimSpace(assignedHostname)
-		log.Printf("✨ Server assigned hostname: %s", assignedHostname)
-		log.Printf("🌐 Your service is now available at: http://%s", assignedHostname)
+		
+		// Cool format for successful connection
+		fmt.Println("\n✓ Tunnel established")
+		fmt.Printf("✓ Forwarding https://%s -> localhost:%s\n", assignedHostname, strings.TrimPrefix(local, "localhost:"))
+		fmt.Println("✓ Ready for connections\n")
+	} else {
+		// Cool format for custom hostname
+		fmt.Println("\n✓ Tunnel established")
+		fmt.Printf("✓ Forwarding https://%s -> %s\n", hostname, local)
+		fmt.Println("✓ Ready for connections\n")
 	}
 
 	// Create a smux client session
@@ -117,44 +141,47 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 	// Read the 4-byte length header for the HTTP request
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(stream, header); err != nil {
-		log.Println("Error reading stream header:", err)
+		logError("Error reading stream header: %v", err)
 		return
 	}
 	reqLen := binary.BigEndian.Uint32(header)
 	reqBytes := make([]byte, reqLen)
 	if _, err := io.ReadFull(stream, reqBytes); err != nil {
-		log.Println("Error reading stream request:", err)
+		logError("Error reading stream request: %v", err)
 		return
 	}
 
 	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(reqBytes)))
 	if err != nil {
-		log.Println("Error parsing HTTP request:", err)
+		logError("Error parsing HTTP request: %v", err)
 		return
 	}
 
 	// Preserve client IP if available
 	clientIP := req.Header.Get("X-Forwarded-For")
-	remoteAddr := req.RemoteAddr
+	// Get remote address for logging purposes
+	remoteAddrStr := req.RemoteAddr
 	req.RequestURI = ""
 	req.URL.Scheme = "http"
 	req.URL.Host = local
 
 	if preserveClientIP && clientIP != "" {
-		log.Printf("Preserving client IP: %s", clientIP)
+		logInfo("Preserving client IP: %s", clientIP)
 	}
 
-	log.Printf("Forwarding: %s %s (from %s)", req.Method, req.URL.String(), func() string {
-		if clientIP != "" {
-			return clientIP
+	// Only log non-HMR requests to reduce noise
+	if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
+		sourceIP := clientIP
+		if sourceIP == "" {
+			sourceIP = remoteAddrStr
 		}
-		return remoteAddr
-	}())
+		logSuccess("Request: %s %s (from %s)", req.Method, req.URL.Path, sourceIP)
+	}
 
-	// Forward the request to the local Next.js server
+	// Forward the request to the local service
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Println("Local forward failed:", err)
+		logError("Local forward failed: %v", err)
 		resp = &http.Response{
 			StatusCode: http.StatusBadGateway,
 			Body:       io.NopCloser(strings.NewReader("Failed to forward to local service")),
@@ -162,12 +189,17 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 			ProtoMajor: 1,
 			ProtoMinor: 1,
 		}
+	} else {
+		// Log successful responses but not for HMR
+		if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
+			logSuccess("Response: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		}
 	}
 
 	// Write the response back to the stream with a 4-byte length header.
 	var buf bytes.Buffer
 	if err := resp.Write(&buf); err != nil {
-		log.Println("Error encoding response:", err)
+		logError("Error encoding response: %v", err)
 		return
 	}
 	respBytes := buf.Bytes()
@@ -178,7 +210,7 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 	// Set a write deadline for safety.
 	stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if _, err := stream.Write(append(lengthHeader, respBytes...)); err != nil {
-		log.Println("Error sending response on stream:", err)
+		logError("Error sending response on stream: %v", err)
 		return
 	}
 	stream.SetWriteDeadline(time.Time{})
