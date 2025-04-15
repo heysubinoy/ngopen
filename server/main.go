@@ -218,7 +218,7 @@ func startHTTPServer(registry *TunnelRegistry) {
 		io.Copy(w, resp.Body)
 	})
 
-	go func() {
+	// go func() {
 		server := &http.Server{
 			Addr:           ":443",
 			ReadTimeout:    30 * time.Second,
@@ -228,17 +228,17 @@ func startHTTPServer(registry *TunnelRegistry) {
 
 		log.Println("HTTPS server listening on :443")
 		log.Fatal(server.ListenAndServeTLS("/etc/letsencrypt/live/n.sbn.lol/fullchain.pem", "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"))
-	}()
+	// }()
 
-	httpServer := &http.Server{
-		Addr:           ":80",
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		MaxHeaderBytes: 1 << 20,
-	}
+	// httpServer := &http.Server{
+	// 	Addr:           ":80",
+	// 	ReadTimeout:    30 * time.Second,
+	// 	WriteTimeout:   30 * time.Second,
+	// 	MaxHeaderBytes: 1 << 20,
+	// }
 
-	log.Println("HTTP server listening on :80")
-	log.Fatal(httpServer.ListenAndServe())
+	// log.Println("HTTP server listening on :80")
+	// log.Fatal(httpServer.ListenAndServe())
 }
 
 func main() {
