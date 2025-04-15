@@ -70,6 +70,9 @@ func generateHostname() string {
 
 // startTunnelListener listens for new tunnel client connections.
 func startTunnelListener(registry *TunnelRegistry) {
+	// Set your desired auth token - you could also load this from an environment variable
+	const validAuthToken = "your-secure-token-here" // Change this to your secure token
+
 	ln, err := net.Listen("tcp", ":9000")
 	if err != nil {
 		log.Fatal("Tunnel listen error:", err)
@@ -93,11 +96,14 @@ func startTunnelListener(registry *TunnelRegistry) {
 				return
 			}
 			authToken = strings.TrimSpace(authToken)
-			if authToken != "expected-auth-token" { // Replace with your actual token validation logic
-				log.Println("Invalid auth token, closing connection.")
+
+			// Validate the token
+			if authToken != validAuthToken {
+				log.Printf("Invalid auth token '%s', closing connection.", authToken)
 				c.Close()
 				return
 			}
+			log.Println("Client authenticated successfully")
 
 			// Read client message (hostname request)
 			clientMsg, err := reader.ReadString('\n')

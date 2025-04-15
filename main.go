@@ -20,17 +20,17 @@ import (
 	"github.com/xtaci/smux"
 )
 
-// Custom logger with emoji prefixes
+// Custom logger with colorful emoji prefixes
 func logSuccess(format string, v ...interface{}) {
-	log.Printf("✓ "+format, v...)
+	log.Printf("\033[32m✓\033[0m "+format, v...) // Green color
 }
 
 func logInfo(format string, v ...interface{}) {
-	log.Printf("ℹ️ "+format, v...)
+	log.Printf("\033[36mℹ️\033[0m "+format, v...) // Cyan color
 }
 
 func logError(format string, v ...interface{}) {
-	log.Printf("❌ "+format, v...)
+	log.Printf("\033[31m❌\033[0m "+format, v...) // Red color
 }
 
 func main() {
@@ -41,7 +41,6 @@ func main() {
 	preserveClientIP := flag.Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
 	authToken := flag.String("auth", "", "Authentication token for server")
 
-
 	flag.Parse()
 
 	if *hostname == "" || *local == "" {
@@ -49,11 +48,10 @@ func main() {
 		os.Exit(1)
 	}
 	if *authToken == "" {
-		// logError("Authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
 		flag.Usage()
 		os.Exit(1)
-		// return "", fmt.Errorf("authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
 	}
+
 	// Setup graceful shutdown
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
@@ -76,13 +74,13 @@ func main() {
 		case <-stop:
 			return
 		default:
-			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP,*authToken)
+			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP, *authToken)
 			if err != nil {
 				if assignedHostname != "" {
 					// If we got a hostname before the error, preserve it
 					lastAssignedHostname = assignedHostname
 				}
-				logError("Connection error: %v. Reconnecting to %s in %v...", 
+				logError("Connection error: %v. Reconnecting to \033[36m%s\033[0m in %v...", 
 					err, lastAssignedHostname, *reconnectDelay)
 				select {
 				case <-stop:
@@ -92,7 +90,8 @@ func main() {
 			} else if assignedHostname != "" {
 				// If connection closed normally but we had a hostname, preserve it
 				lastAssignedHostname = assignedHostname
-				logInfo("Server closed connection for hostname '%s'. Reconnecting...", lastAssignedHostname)
+				logInfo("Server closed connection for hostname '\033[36m%s\033[0m'. Reconnecting...", 
+					lastAssignedHostname)
 				select {
 				case <-stop:
 					return
@@ -103,14 +102,12 @@ func main() {
 	}
 }
 
-func connectAndServe(hostname, local, server string, preserveClientIP bool,authToken string) (string, error) {
+func connectAndServe(hostname, local, server string, preserveClientIP bool, authToken string) (string, error) {
 	conn, err := net.Dial("tcp", server)
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer conn.Close()
-
-
 
 	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{}) // clear any deadlines
@@ -129,15 +126,17 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool,authT
 		}
 		assignedHostname = strings.TrimSpace(assignedHostname)
 		
-		// Cool format for successful connection
-		fmt.Println("\n✓ Tunnel established")
-		fmt.Printf("✓ Forwarding https://%s -> localhost:%s\n", assignedHostname, strings.TrimPrefix(local, "localhost:"))
-		fmt.Println("✓ Ready for connections\n")
+		// Cool format for successful connection with colors
+		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
+		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36mlocalhost:%s\033[0m\n", 
+			assignedHostname, strings.TrimPrefix(local, "localhost:"))
+		fmt.Println("\033[32m✓ Ready for connections\033[0m\n")
 	} else {
-		// Cool format for custom hostname
-		fmt.Println("\n✓ Tunnel established")
-		fmt.Printf("✓ Forwarding https://%s -> %s\n", hostname, local)
-		fmt.Println("✓ Ready for connections\n")
+		// Cool format for custom hostname with colors
+		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
+		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36m%s\033[0m\n", 
+			hostname, local)
+		fmt.Println("\033[32m✓ Ready for connections\033[0m\n")
 	}
 
 	// Create a smux client session
