@@ -39,10 +39,20 @@ func main() {
 	server := flag.String("server", "172.207.27.146:9000", "Tunnel server address")
 	reconnectDelay := flag.Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	preserveClientIP := flag.Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
+	authToken := flag.String("auth", "", "Authentication token for server")
+
+
 	flag.Parse()
+
 	if *hostname == "" || *local == "" {
 		flag.Usage()
 		os.Exit(1)
+	}
+	if *authToken == "" {
+		// logError("Authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
+		flag.Usage()
+		os.Exit(1)
+		// return "", fmt.Errorf("authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
 	}
 	// Setup graceful shutdown
 	signals := make(chan os.Signal, 1)
@@ -66,7 +76,7 @@ func main() {
 		case <-stop:
 			return
 		default:
-			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP)
+			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP,*authToken)
 			if err != nil {
 				if assignedHostname != "" {
 					// If we got a hostname before the error, preserve it
@@ -93,25 +103,20 @@ func main() {
 	}
 }
 
-func connectAndServe(hostname, local, server string, preserveClientIP bool) (string, error) {
+func connectAndServe(hostname, local, server string, preserveClientIP bool,authToken string) (string, error) {
 	conn, err := net.Dial("tcp", server)
 	if err != nil {
 		return "", fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer conn.Close()
 
-	authToken := flag.String("auth-token", os.Getenv("NGOPEN_AUTH_TOKEN"), "Authentication token for server")
-	flag.Parse()
 
-	if *authToken == "" {
-		return "", fmt.Errorf("authentication token is not set. Use --auth-token flag or set NGOPEN_AUTH_TOKEN environment variable")
-	}
 
 	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{}) // clear any deadlines
 
 	// Send auth token followed by hostname request
-	if _, err := fmt.Fprintf(conn, "%s\n%s\n", *authToken, hostname); err != nil {
+	if _, err := fmt.Fprintf(conn, "%s\n%s\n", authToken, hostname); err != nil {
 		return "", fmt.Errorf("failed to send auth token and hostname request: %w", err)
 	}
 
