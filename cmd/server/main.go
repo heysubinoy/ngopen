@@ -91,7 +91,7 @@ func startTunnelListener(registry *server.TunnelRegistry) {
 // startHTTPServer starts an HTTP server that, on each request, opens a new smux stream.
 func startHTTPServer(registry *server.TunnelRegistry) {
 	devMode := os.Getenv("NGOPEN_MODE") == "DEV"
-	addr := ":443"
+	addr := ":8080"
 	if devMode {
 		addr = ":8080"
 	}
