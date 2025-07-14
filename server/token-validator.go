@@ -1,5 +1,6 @@
-package main
+package server
+
 func IsValidToken(token string) bool {
 
-	return token == "123" 
+	return token == "123"
 }

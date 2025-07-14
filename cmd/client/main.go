@@ -17,20 +17,21 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/heysubinoy/ngopen/protocol"
 	"github.com/xtaci/smux"
 )
 
-// Custom logger with colorful emoji prefixes
+// Custom logger with colorful emoji prefixes and timestamps
 func logSuccess(format string, v ...interface{}) {
-	log.Printf("\033[32m✓\033[0m "+format, v...) // Green color
+	log.Printf("\033[32m%s ✓\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Green color
 }
 
 func logInfo(format string, v ...interface{}) {
-	log.Printf("\033[36mℹ️\033[0m "+format, v...) // Cyan color
+	log.Printf("\033[36m%s ℹ️\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Cyan color
 }
 
 func logError(format string, v ...interface{}) {
-	log.Printf("\033[31m❌\033[0m "+format, v...) // Red color
+	log.Printf("\033[31m%s ❌\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Red color
 }
 
 func main() {
@@ -59,12 +60,13 @@ func main() {
 
 	go func() {
 		<-signals
-		logInfo("Shutting down client...")
+		logInfo("Shutting down client (signal received)...")
 		close(stop)
 		time.Sleep(250 * time.Millisecond)
 		os.Exit(0)
 	}()
 
+	logInfo("Client starting up...")
 	// Track the last assigned hostname to preserve it across reconnections
 	lastAssignedHostname := *hostname
 
@@ -80,7 +82,7 @@ func main() {
 					// If we got a hostname before the error, preserve it
 					lastAssignedHostname = assignedHostname
 				}
-				logError("Connection error: %v. Reconnecting to \033[36m%s\033[0m in %v...", 
+				logError("Connection error: %v. Reconnecting to \033[36m%s\033[0m in %v...",
 					err, lastAssignedHostname, *reconnectDelay)
 				select {
 				case <-stop:
@@ -90,7 +92,7 @@ func main() {
 			} else if assignedHostname != "" {
 				// If connection closed normally but we had a hostname, preserve it
 				lastAssignedHostname = assignedHostname
-				logInfo("Server closed connection for hostname '\033[36m%s\033[0m'. Reconnecting...", 
+				logInfo("Server closed connection for hostname '\033[36m%s\033[0m'. Reconnecting...",
 					lastAssignedHostname)
 				select {
 				case <-stop:
@@ -103,77 +105,106 @@ func main() {
 }
 
 func connectAndServe(hostname, local, server string, preserveClientIP bool, authToken string) (string, error) {
+	logInfo("Attempting to connect to server at %s", server)
 	conn, err := net.Dial("tcp", server)
 	if err != nil {
+		logError("TCP connection to %s failed: %v", server, err)
 		return "", fmt.Errorf("failed to connect to server: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		logInfo("TCP connection to %s closed", server)
+		conn.Close()
+	}()
 
 	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{}) // clear any deadlines
 
-	// Send auth token followed by hostname request
-	if _, err := fmt.Fprintf(conn, "%s\n%s\n", authToken, hostname); err != nil {
-		return "", fmt.Errorf("failed to send auth token and hostname request: %w", err)
-	}
-
-	assignedHostname := hostname
-	reader := bufio.NewReader(conn) // Read the server's response to the auth token
-	authResponse, err := reader.ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("failed to read auth response: %w", err)
-	}
-	authResponse = strings.TrimSpace(authResponse)
-	if authResponse != "Valid" {
-		logError("Invalid auth token: %s", authToken)
-		 // Print a helpful message before exiting
-		fmt.Println("\033[31m❌ Authentication failed: Invalid auth token\033[0m")
-		fmt.Println("\033[31m❌ Please check your token and try again\033[0m")
-		// Exit with error code
-		os.Exit(1)
-		return "", fmt.Errorf("invalid auth token") // This won't execute, but keeps for consistency
-	}
-
-	if hostname == "AUTO" {
-		reader := bufio.NewReader(conn)
-		assignedHostname, err = reader.ReadString('\n')
-		if err != nil {
-			return "", fmt.Errorf("failed to read assigned hostname: %w", err)
-		}
-		assignedHostname = strings.TrimSpace(assignedHostname)
-		
-		// Cool format for successful connection with colors
-		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
-		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36mlocalhost:%s\033[0m\n", 
-			assignedHostname, strings.TrimPrefix(local, "localhost:"))
-		fmt.Println("\033[32m✓ Ready for connections\033[0m")
-	} else {
-		// Cool format for custom hostname with colors
-		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
-		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36m%s\033[0m\n", 
-			hostname, local)
-		fmt.Println("\033[32m✓ Ready for connections\033[0m")
-	}
-
 	// Create a smux client session
+	logInfo("Establishing smux session...")
 	session, err := smux.Client(conn, nil)
 	if err != nil {
-		return assignedHostname, fmt.Errorf("failed to create smux session: %w", err)
+		logError("Failed to create smux session: %v", err)
+		return hostname, fmt.Errorf("failed to create smux session: %w", err)
 	}
-	defer session.Close()
+	defer func() {
+		logInfo("smux session closed")
+		session.Close()
+	}()
+
+	// Open the first stream for authentication
+	logInfo("Opening first stream for authentication...")
+	authStream, err := session.OpenStream()
+	if err != nil {
+		logError("Failed to open auth stream: %v", err)
+		return hostname, fmt.Errorf("failed to open auth stream: %w", err)
+	}
+
+	authMsg := protocol.ProtocolAuthMessage{
+		AuthToken: authToken,
+		Hostname:  hostname,
+	}
+	encoded, err := protocol.EncodeProtocolAuthMessage(authMsg)
+	if err != nil {
+		logError("Failed to encode auth message: %v", err)
+		authStream.Close()
+		return hostname, fmt.Errorf("failed to encode auth message: %w", err)
+	}
+	if _, err := authStream.Write(encoded); err != nil {
+		logError("Failed to send auth message: %v", err)
+		authStream.Close()
+		return hostname, fmt.Errorf("failed to send auth message: %w", err)
+	}
+
+	// Read the response from the server
+	respHeader := make([]byte, 4)
+	if _, err := io.ReadFull(authStream, respHeader); err != nil {
+		logError("Failed to read auth response header: %v", err)
+		authStream.Close()
+		return hostname, fmt.Errorf("failed to read auth response header: %w", err)
+	}
+	respLen := binary.BigEndian.Uint32(respHeader)
+	respPayload := make([]byte, respLen)
+	if _, err := io.ReadFull(authStream, respPayload); err != nil {
+		logError("Failed to read auth response payload: %v", err)
+		authStream.Close()
+		return hostname, fmt.Errorf("failed to read auth response payload: %w", err)
+	}
+	authStream.Close()
+
+	respStr := string(respPayload)
+	if len(respStr) >= 3 && respStr[:3] == "OK:" {
+		assignedHostname := respStr[3:]
+		logSuccess("Authenticated. Assigned hostname: %s", assignedHostname)
+		// Cool format for successful connection with colors
+		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
+		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36m%s\033[0m\n",
+			assignedHostname, local)
+		fmt.Println("\033[32m✓ Ready for connections\033[0m")
+		logInfo("Tunnel established and ready for connections on https://%s", assignedHostname)
+		hostname = assignedHostname
+	} else {
+		logError("Authentication failed: %s", respStr)
+		fmt.Println("\033[31m❌ Authentication failed:\033[0m", respStr)
+		return hostname, fmt.Errorf("authentication failed: %s", respStr)
+	}
 
 	// Accept and handle new streams concurrently.
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
-			return assignedHostname, fmt.Errorf("failed to accept stream: %w", err)
+			logError("Failed to accept stream: %v", err)
+			return hostname, fmt.Errorf("failed to accept stream: %w", err)
 		}
+		logInfo("Accepted new stream from server. Handling HTTP request...")
 		go handleStream(stream, local, preserveClientIP)
 	}
 }
 
 func handleStream(stream net.Conn, local string, preserveClientIP bool) {
-	defer stream.Close()
+	defer func() {
+		logInfo("Closed stream for local service %s", local)
+		stream.Close()
+	}()
 
 	// Read the 4-byte length header for the HTTP request
 	header := make([]byte, 4)
@@ -196,8 +227,8 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 
 	// Preserve client IP if available
 	clientIP := req.Header.Get("X-Forwarded-For")
-	// Get remote address for logging purposes
 	remoteAddrStr := req.RemoteAddr
+	logInfo("Handling HTTP request for %s (client IP: %s, remote: %s)", req.URL.Path, clientIP, remoteAddrStr)
 	req.RequestURI = ""
 	req.URL.Scheme = "http"
 	req.URL.Host = local
