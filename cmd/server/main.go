@@ -163,16 +163,17 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 		server.LogInfo("HTTP server (dev mode) listening on %s", addr)
 		log.Fatal(serve.ListenAndServe())
 	} else {
-		certFile := os.Getenv("NGOPEN_CERT_FILE")
-		keyFile := os.Getenv("NGOPEN_KEY_FILE")
-		if certFile == "" {
-			certFile = "/etc/letsencrypt/live/n.sbn.lol/fullchain.pem"
-		}
-		if keyFile == "" {
-			keyFile = "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"
-		}
+		// certFile := os.Getenv("NGOPEN_CERT_FILE")
+		// keyFile := os.Getenv("NGOPEN_KEY_FILE")
+		// if certFile == "" {
+		// 	certFile = "/etc/letsencrypt/live/n.sbn.lol/fullchain.pem"
+		// }
+		// if keyFile == "" {
+		// 	keyFile = "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"
+		// } 
+		//Will be handled by the reverse proxy in production
 		server.LogInfo("HTTPS server (prod mode) listening on %s", addr)
-		log.Fatal(serve.ListenAndServeTLS(certFile, keyFile))
+		log.Fatal(serve.ListenAndServe())
 	}
 }
 
