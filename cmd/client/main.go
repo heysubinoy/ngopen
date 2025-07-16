@@ -5,7 +5,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -17,40 +16,141 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fatih/color"
 	"github.com/heysubinoy/ngopen/protocol"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"github.com/xtaci/smux"
 )
 
-// Custom logger with colorful emoji prefixes and timestamps
-func logSuccess(format string, v ...interface{}) {
-	log.Printf("\033[32m%s ✓\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Green color
-}
-
-func logInfo(format string, v ...interface{}) {
-	log.Printf("\033[36m%s ℹ️\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Cyan color
-}
-
-func logError(format string, v ...interface{}) {
-	log.Printf("\033[31m%s ❌\033[0m "+format, append([]interface{}{time.Now().Format("2006-01-02 15:04:05")}, v...)...) // Red color
-}
+var (
+	cfgFile string
+)
 
 func main() {
-	hostname := flag.String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
-	local := flag.String("local", "", "Local service to forward to")
-	server := flag.String("server", "tunnel.n.sbn.lol:9000", "Tunnel server address")
-	reconnectDelay := flag.Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
-	preserveClientIP := flag.Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
-	authToken := flag.String("auth", "", "Authentication token for server")
+	rootCmd := &cobra.Command{
+		Use:   "ngopen",
+		Short: "Expose your local service to the internet via a secure tunnel",
+		Run:   runClient,
+	}
 
-	flag.Parse()
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.ngopen/config.yaml)")
+	rootCmd.PersistentFlags().String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
+	rootCmd.PersistentFlags().String("local", "", "Local service to forward to")
+	rootCmd.PersistentFlags().String("server", "tunnel.n.sbn.lol:9000", "Tunnel server address")
+	rootCmd.PersistentFlags().Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
+	rootCmd.PersistentFlags().Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
+	rootCmd.PersistentFlags().String("auth", "", "Authentication token for server")
 
-	if *hostname == "" || *local == "" {
-		flag.Usage()
+	viper.BindPFlag("hostname", rootCmd.PersistentFlags().Lookup("hostname"))
+	viper.BindPFlag("local", rootCmd.PersistentFlags().Lookup("local"))
+	viper.BindPFlag("server", rootCmd.PersistentFlags().Lookup("server"))
+	viper.BindPFlag("reconnect-delay", rootCmd.PersistentFlags().Lookup("reconnect-delay"))
+	viper.BindPFlag("preserve-ip", rootCmd.PersistentFlags().Lookup("preserve-ip"))
+	viper.BindPFlag("auth", rootCmd.PersistentFlags().Lookup("auth"))
+
+	cobra.OnInitialize(initConfig)
+
+	// Config subcommand
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage persistent ngopen config",
+	}
+	configSetCmd := &cobra.Command{
+		Use:   "set <key> <value>",
+		Short: "Set a config value",
+		Args:  cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			key, value := args[0], args[1]
+			viper.Set(key, value)
+			if err := viper.WriteConfigAs(configPath()); err != nil {
+				color.Red("❌ Failed to write config: %v", err)
+				os.Exit(1)
+			}
+			color.Green("✓ Set %s = %s", key, value)
+		},
+	}
+	configGetCmd := &cobra.Command{
+		Use:   "get <key>",
+		Short: "Get a config value",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			key := args[0]
+			val := viper.GetString(key)
+			fmt.Printf("%s = %s\n", key, val)
+		},
+	}
+	configListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all config values",
+		Run: func(cmd *cobra.Command, args []string) {
+			all := viper.AllSettings()
+			for k, v := range all {
+				fmt.Printf("%s = %v\n", k, v)
+			}
+		},
+	}
+	configCmd.AddCommand(configSetCmd, configGetCmd, configListCmd)
+	rootCmd.AddCommand(configCmd)
+
+	if err := rootCmd.Execute(); err != nil {
+		color.Red("❌ %v", err)
 		os.Exit(1)
 	}
-	if *authToken == "" {
-		flag.Usage()
+}
+
+func initConfig() {
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			color.Red("❌ Unable to find home directory: %v", err)
+			os.Exit(1)
+		}
+		configDir := home + string(os.PathSeparator) + ".ngopen"
+		os.MkdirAll(configDir, 0700)
+		viper.AddConfigPath(configDir)
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
+	}
+	viper.SetEnvPrefix("NGOPEN")
+	viper.AutomaticEnv()
+	if err := viper.ReadInConfig(); err == nil {
+		color.Cyan("Using config file: %s", viper.ConfigFileUsed())
+	}
+}
+
+func configPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		color.Red("❌ Unable to find home directory: %v", err)
 		os.Exit(1)
+	}
+	return home + string(os.PathSeparator) + ".ngopen" + string(os.PathSeparator) + "config.yaml"
+}
+
+func runClient(cmd *cobra.Command, args []string) {
+	hostname := viper.GetString("hostname")
+	local := viper.GetString("local")
+	server := viper.GetString("server")
+	reconnectDelay := viper.GetDuration("reconnect-delay")
+	preserveClientIP := viper.GetBool("preserve-ip")
+	authToken := viper.GetString("auth")
+
+	// If no flags or arguments are provided, show usage and return
+	if len(os.Args) == 1 || (hostname == "AUTO" && local == "" && server == "tunnel.n.sbn.lol:9000" && authToken == "") {
+		cmd.Help()
+		return
+	}
+
+	if hostname == "" || local == "" {
+		cmd.Help()
+		return
+	}
+	if authToken == "" {
+		cmd.Help()
+		return
 	}
 
 	// Setup graceful shutdown
@@ -67,43 +167,65 @@ func main() {
 	}()
 
 	logInfo("Client starting up...")
-	// Track the last assigned hostname to preserve it across reconnections
-	lastAssignedHostname := *hostname
+	lastAssignedHostname := hostname
 
-	// Connection loop with reconnect logic
+	firstAttempt := true
 	for {
 		select {
 		case <-stop:
 			return
 		default:
-			assignedHostname, err := connectAndServe(lastAssignedHostname, *local, *server, *preserveClientIP, *authToken)
+			assignedHostname, err := connectAndServe(lastAssignedHostname, local, server, preserveClientIP, authToken)
 			if err != nil {
+				if firstAttempt {
+					logError("Initial connection/authentication failed: %v. Not retrying.", err)
+					return
+				}
 				if assignedHostname != "" {
-					// If we got a hostname before the error, preserve it
 					lastAssignedHostname = assignedHostname
 				}
-				logError("Connection error: %v. Reconnecting to \033[36m%s\033[0m in %v...",
-					err, lastAssignedHostname, *reconnectDelay)
+				logError("Connection error: %v. Reconnecting to %s in %v...", err, lastAssignedHostname, reconnectDelay)
 				select {
 				case <-stop:
 					return
-				case <-time.After(*reconnectDelay):
+				case <-time.After(reconnectDelay):
 				}
 			} else if assignedHostname != "" {
-				// If connection closed normally but we had a hostname, preserve it
+				firstAttempt = false
 				lastAssignedHostname = assignedHostname
-				logInfo("Server closed connection for hostname '\033[36m%s\033[0m'. Reconnecting...",
-					lastAssignedHostname)
+				logInfo("Server closed connection for hostname '%s'. Reconnecting...", lastAssignedHostname)
 				select {
 				case <-stop:
 					return
-				case <-time.After(*reconnectDelay):
+				case <-time.After(reconnectDelay):
 				}
+			} else {
+				firstAttempt = false
 			}
 		}
 	}
 }
 
+// --- Logging helpers ---
+func logSuccess(format string, v ...interface{}) {
+	args := []interface{}{color.New(color.FgGreen).Sprint(time.Now().Format("2006-01-02 15:04:05")), "✓"}
+	args = append(args, v...)
+	log.Printf("%s %s "+format, args...)
+}
+
+func logInfo(format string, v ...interface{}) {
+	args := []interface{}{color.New(color.FgCyan).Sprint(time.Now().Format("2006-01-02 15:04:05")), "ℹ️"}
+	args = append(args, v...)
+	log.Printf("%s %s "+format, args...)
+}
+
+func logError(format string, v ...interface{}) {
+	args := []interface{}{color.New(color.FgRed).Sprint(time.Now().Format("2006-01-02 15:04:05")), "❌"}
+	args = append(args, v...)
+	log.Printf("%s %s "+format, args...)
+}
+
+// --- Main tunnel logic (unchanged) ---
 func connectAndServe(hostname, local, server string, preserveClientIP bool, authToken string) (string, error) {
 	logInfo("Attempting to connect to server at %s", server)
 	conn, err := net.Dial("tcp", server)
@@ -117,9 +239,8 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	}()
 
 	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
-	conn.SetDeadline(time.Time{}) // clear any deadlines
+	conn.SetDeadline(time.Time{})
 
-	// Create a smux client session
 	logInfo("Establishing smux session...")
 	session, err := smux.Client(conn, nil)
 	if err != nil {
@@ -131,7 +252,6 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 		session.Close()
 	}()
 
-	// Open the first stream for authentication
 	logInfo("Opening first stream for authentication...")
 	authStream, err := session.OpenStream()
 	if err != nil {
@@ -155,7 +275,6 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 		return hostname, fmt.Errorf("failed to send auth message: %w", err)
 	}
 
-	// Read the response from the server
 	respHeader := make([]byte, 4)
 	if _, err := io.ReadFull(authStream, respHeader); err != nil {
 		logError("Failed to read auth response header: %v", err)
@@ -175,20 +294,23 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	if len(respStr) >= 3 && respStr[:3] == "OK:" {
 		assignedHostname := respStr[3:]
 		logSuccess("Authenticated. Assigned hostname: %s", assignedHostname)
-		// Cool format for successful connection with colors
-		fmt.Println("\n\033[32m✓ Tunnel established\033[0m")
-		fmt.Printf("\033[32m✓ Forwarding\033[0m \033[36mhttps://%s\033[0m \033[32m->\033[0m \033[36m%s\033[0m\n",
-			assignedHostname, local)
-		fmt.Println("\033[32m✓ Ready for connections\033[0m")
+		fmt.Println()
+		color.Green("✓ Tunnel established")
+		fmt.Printf("%s https://%s %s %s\n",
+			color.GreenString("✓ Forwarding"),
+			assignedHostname,
+			color.GreenString("->"),
+			color.CyanString(local),
+		)
+		color.Green("✓ Ready for connections")
 		logInfo("Tunnel established and ready for connections on https://%s", assignedHostname)
 		hostname = assignedHostname
 	} else {
 		logError("Authentication failed: %s", respStr)
-		fmt.Println("\033[31m❌ Authentication failed:\033[0m", respStr)
+		color.Red("❌ Authentication failed: %s", respStr)
 		return hostname, fmt.Errorf("authentication failed: %s", respStr)
 	}
 
-	// Accept and handle new streams concurrently.
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -206,7 +328,6 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 		stream.Close()
 	}()
 
-	// Read the 4-byte length header for the HTTP request
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(stream, header); err != nil {
 		logError("Error reading stream header: %v", err)
@@ -225,7 +346,6 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 		return
 	}
 
-	// Preserve client IP if available
 	clientIP := req.Header.Get("X-Forwarded-For")
 	remoteAddrStr := req.RemoteAddr
 	logInfo("Handling HTTP request for %s (client IP: %s, remote: %s)", req.URL.Path, clientIP, remoteAddrStr)
@@ -237,7 +357,6 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 		logInfo("Preserving client IP: %s", clientIP)
 	}
 
-	// Only log non-HMR requests to reduce noise
 	if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
 		sourceIP := clientIP
 		if sourceIP == "" {
@@ -246,7 +365,6 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 		logSuccess("Request: %s %s (from %s)", req.Method, req.URL.Path, sourceIP)
 	}
 
-	// Forward the request to the local service
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		logError("Local forward failed: %v", err)
@@ -258,13 +376,11 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 			ProtoMinor: 1,
 		}
 	} else {
-		// Log successful responses but not for HMR
 		if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
 			logSuccess("Response: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 		}
 	}
 
-	// Write the response back to the stream with a 4-byte length header.
 	var buf bytes.Buffer
 	if err := resp.Write(&buf); err != nil {
 		logError("Error encoding response: %v", err)
@@ -275,7 +391,6 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 	lengthHeader := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthHeader, respLen)
 
-	// Set a write deadline for safety.
 	stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if _, err := stream.Write(append(lengthHeader, respBytes...)); err != nil {
 		logError("Error sending response on stream: %v", err)
