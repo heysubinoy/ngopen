@@ -125,18 +125,20 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 		defer stream.Close()
 
 		// Write the request over the stream.
-		stream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		stream.SetWriteDeadline(time.Now().Add(1 * time.Minute))
 		if err := server.WriteFramedRequest(stream, r); err != nil {
 			server.LogError("Failed to write to tunnel stream:", err)
-			registry.Remove(target)
+			// Only remove client if the session is broken, not on per-request error
+			// registry.Remove(target)
 			http.Error(w, "Tunnel write failed", http.StatusBadGateway)
 			return
 		}
-		stream.SetReadDeadline(time.Now().Add(30 * time.Second))
+		stream.SetReadDeadline(time.Now().Add(1 * time.Minute))
 		resp, err := server.ReadFramedResponse(stream, r)
 		if err != nil {
 			server.LogError("Failed to read from tunnel stream:", err)
-			registry.Remove(target)
+			// Only remove client if the session is broken, not on per-request error
+			// registry.Remove(target)
 			http.Error(w, "Tunnel response failed", http.StatusBadGateway)
 			return
 		}
@@ -170,7 +172,7 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 		// }
 		// if keyFile == "" {
 		// 	keyFile = "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"
-		// } 
+		// }
 		//Will be handled by the reverse proxy in production
 		server.LogInfo("HTTPS server (prod mode) listening on %s", addr)
 		log.Fatal(serve.ListenAndServe())

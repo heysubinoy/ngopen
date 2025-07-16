@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 )
@@ -19,9 +20,10 @@ func IsValidToken(token string) bool {
 		LogError("API_VALIDATE_URL is not set")
 		return false
 	}
-
+	fmt.Println("API_VALIDATE_URL", apiURL)
 	payload := map[string]string{"key": token}
 	body, _ := json.Marshal(payload)
+	fmt.Println("body", string(body))
 
 	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(body))
 	if err != nil {
