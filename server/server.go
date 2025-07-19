@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/heysubinoy/ngopen/protocol"
@@ -108,14 +107,11 @@ func StartHTTPServer(registry *TunnelRegistry) {
 			return
 		}
 
-		// Filter out hot module reload chatter.
-		if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
-			LogInfo("Request: %s %s", r.Method, r.URL.Path)
-		}
-
+		// Show the contents of static/error.html if tunnel client is not connected
 		tunnelClient, ok := registry.Get(target)
 		if !ok {
-			http.Error(w, "Tunnel client not connected", http.StatusServiceUnavailable)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			http.ServeFile(w, r, "static/error.html")
 			return
 		}
 

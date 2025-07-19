@@ -441,17 +441,11 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 	req.URL.Scheme = "http"
 	req.URL.Host = local
 
-	// if preserveClientIP && clientIP != "" {
-	// 	logInfo("Preserving client IP: %s", clientIP)
-	// }
-
-	if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
-		sourceIP := clientIP
-		if sourceIP == "" {
-			sourceIP = remoteAddrStr
-		}
-		logRequest(req.Method, req.URL.Path, sourceIP)
+	sourceIP := clientIP
+	if sourceIP == "" {
+		sourceIP = remoteAddrStr
 	}
+	logRequest(req.Method, req.URL.Path, sourceIP)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -468,9 +462,7 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 			ProtoMinor: 1,
 		}
 	} else {
-		if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
-			logResponse(resp.StatusCode, http.StatusText(resp.StatusCode))
-		}
+		logResponse(resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
 	var buf bytes.Buffer

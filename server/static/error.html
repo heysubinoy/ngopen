@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ngopen — Tunnel Disconnected</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        background: #12151c;
+        color: #f3f4f8;
+        font-family: "Segoe UI", Roboto, Arial, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+      }
+      .container {
+        text-align: center;
+        background: #191c24;
+        padding: 44px 36px 32px 36px;
+        border-radius: 16px;
+        box-shadow: 0 6px 32px #10101578;
+        min-width: 340px;
+        animation: fadeInPage 1.2s cubic-bezier(0.57, 1.03, 0.32, 1) both;
+      }
+
+      @keyframes fadeInPage {
+        from {
+          opacity: 0;
+          transform: translateY(32px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .tunnel-anim {
+        margin: 0 auto 14px auto;
+        width: 84px;
+        height: 54px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .tube {
+        width: 84px;
+        height: 28px;
+        background: #242837;
+        border-radius: 20px;
+        position: absolute;
+        top: 13px;
+        left: 0;
+        box-shadow: 0 4px 24px #3c415c77;
+        z-index: 1;
+      }
+      .gap-crack {
+        width: 16px;
+        height: 40px;
+        border-left: 4px dashed #ff5555;
+        position: absolute;
+        left: 50%;
+        top: 3px;
+        transform: translateX(-50%);
+        filter: drop-shadow(0 0 2px #f66);
+        animation: crackBlink 0.9s infinite steps(2, start);
+      }
+      @keyframes crackBlink {
+        0%,
+        90% {
+          opacity: 1;
+        }
+        45% {
+          opacity: 0.5;
+        }
+        60% {
+          opacity: 0;
+        }
+      }
+      .dot {
+        position: absolute;
+        width: 11px;
+        height: 11px;
+        top: 18px;
+        border-radius: 50%;
+        background: #ff5555;
+        box-shadow: 0 0 18px #fe9597e9;
+        left: 50%;
+        transform: translateX(-50%);
+        animation: dotPulse 1.1s infinite;
+        z-index: 2;
+      }
+      @keyframes dotPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
+      }
+      h1 {
+        font-size: 2.2rem;
+        font-weight: 700;
+        margin: 0 0 10px 0;
+        color: #ff685f;
+        letter-spacing: -1px;
+        animation: fadeInMsg 1.2s 0.4s both;
+      }
+      @keyframes fadeInMsg {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      .msg {
+        font-size: 1.13rem;
+        line-height: 1.7;
+        color: #d2d4e1;
+        margin: 10px 0 23px 0;
+        animation: fadeInMsg 1.2s 0.55s both;
+      }
+      .tip {
+        font-size: 0.98rem;
+        background: #181b25;
+        display: inline-block;
+        border-radius: 6px;
+        padding: 7px 15px;
+        margin-bottom: 18px;
+        color: #fffbe2db;
+        box-shadow: 0 1px 2px #1919191a;
+        animation: fadeInMsg 1.2s 0.76s both;
+      }
+      .footer {
+        margin-top: 25px;
+        font-size: 0.92rem;
+        color: #a9adc1;
+        opacity: 0.43;
+        letter-spacing: 0.2px;
+      }
+      .footer a {
+        color: #f49d84;
+        text-decoration: none;
+        border-bottom: 1px dotted #ff685f99;
+        transition: border 0.2s;
+      }
+      .footer a:hover {
+        border-bottom: 1px solid #ff685f;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="tunnel-anim" aria-hidden="true">
+        <div class="tube"></div>
+        <div class="gap-crack"></div>
+        <div class="dot"></div>
+      </div>
+      <h1>🚧 Tunnel Disconnected</h1>
+      <div class="msg">
+        Your <b>ngopen</b> tunnel can’t reach the target HTTP service.<br />
+        <span style="color: #ff876c">(No connection)</span>
+      </div>
+      <div class="tip">
+        This usually happens if your local server isn’t running,<br />
+        the port is busy or not accessible, or the tunnel timed out.<br />
+        <br />
+        <b>Check:</b> your server is started and <kbd>ngopen</kbd> is still
+        connected.
+      </div>
+      <div class="footer">
+        ngopen v0 &mdash;
+        <a href="https://github.com/heysubinoy/ngopen" target="_blank">GitHub</a>
+      </div>
+    </div>
+  </body>
+</html>
