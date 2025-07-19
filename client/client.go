@@ -246,7 +246,10 @@ func logError(format string, v ...interface{}) {
 }
 
 func userError(format string, v ...interface{}) {
-	color.New(color.FgRed, color.Bold).Fprintf(os.Stderr, "❌ "+format+"\n", v...)
+	prefix := color.New(color.FgRed, color.Bold).Sprint("❌ ERROR  ")
+	ts := color.New(color.FgHiBlack).Sprint(time.Now().Format("15:04:05"))
+	args := append([]interface{}{ts, prefix}, v...)
+	fmt.Fprintf(os.Stderr, "%s  %s "+format+"\n", args...)
 }
 
 // For HTTP request/response logs, add color to method, path, and status
