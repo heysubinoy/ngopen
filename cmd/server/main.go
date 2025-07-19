@@ -33,6 +33,12 @@ func authenticate(stream net.Conn) (string, bool) {
 	assigned := msg.Hostname
 	if assigned == "AUTO" || assigned == "" {
 		assigned = server.GenerateHostname()
+	} else {
+		resp := "FAIL: Hostname is not allowed"
+		respHeader := make([]byte, 4)
+		binary.BigEndian.PutUint32(respHeader, uint32(len(resp)))
+		stream.Write(append(respHeader, []byte(resp)...))
+		return "", false
 	}
 	resp := "OK:" + assigned
 	respHeader := make([]byte, 4)
