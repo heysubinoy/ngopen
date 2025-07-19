@@ -27,6 +27,14 @@ var (
 	cfgFile string
 )
 
+var debugMode bool
+
+func init() {
+	// Remove default log timestamp and prefix for pretty custom logs
+	log.SetFlags(0)
+	log.SetPrefix("")
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "ngopen",
@@ -41,6 +49,7 @@ func main() {
 	rootCmd.PersistentFlags().Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	rootCmd.PersistentFlags().Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
 	rootCmd.PersistentFlags().String("auth", "", "Authentication token for server")
+	rootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "Show detailed debug logs and errors")
 
 	viper.BindPFlag("hostname", rootCmd.PersistentFlags().Lookup("hostname"))
 	viper.BindPFlag("local", rootCmd.PersistentFlags().Lookup("local"))
@@ -48,6 +57,7 @@ func main() {
 	viper.BindPFlag("reconnect-delay", rootCmd.PersistentFlags().Lookup("reconnect-delay"))
 	viper.BindPFlag("preserve-ip", rootCmd.PersistentFlags().Lookup("preserve-ip"))
 	viper.BindPFlag("auth", rootCmd.PersistentFlags().Lookup("auth"))
+	viper.BindPFlag("debug", rootCmd.PersistentFlags().Lookup("debug"))
 
 	cobra.OnInitialize(initConfig)
 
@@ -131,6 +141,7 @@ func configPath() string {
 }
 
 func runClient(cmd *cobra.Command, args []string) {
+	debugMode = viper.GetBool("debug")
 	hostname := viper.GetString("hostname")
 	local := viper.GetString("local")
 	server := viper.GetString("server")
@@ -166,7 +177,7 @@ func runClient(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}()
 
-	logInfo("Client starting up...")
+	// logInfo("Client starting up...")
 	lastAssignedHostname := hostname
 
 	firstAttempt := true
@@ -208,29 +219,69 @@ func runClient(cmd *cobra.Command, args []string) {
 
 // --- Logging helpers ---
 func logSuccess(format string, v ...interface{}) {
-	args := []interface{}{color.New(color.FgGreen).Sprint(time.Now().Format("2006-01-02 15:04:05")), "✓"}
-	args = append(args, v...)
-	log.Printf("%s %s "+format, args...)
+	prefix := color.New(color.FgGreen, color.Bold).Sprint("✓ SUCCESS")
+	ts := color.New(color.FgHiBlack).Sprint(time.Now().Format("15:04:05"))
+	args := append([]interface{}{ts, prefix}, v...)
+	log.Printf("%s  %s  "+format, args...)
 }
 
 func logInfo(format string, v ...interface{}) {
-	args := []interface{}{color.New(color.FgCyan).Sprint(time.Now().Format("2006-01-02 15:04:05")), "ℹ️"}
-	args = append(args, v...)
-	log.Printf("%s %s "+format, args...)
+	if !debugMode {
+		return
+	}
+	prefix := color.New(color.FgCyan, color.Bold).Sprint("ℹ INFO   ")
+	ts := color.New(color.FgHiBlack).Sprint(time.Now().Format("15:04:05"))
+	args := append([]interface{}{ts, prefix}, v...)
+	log.Printf("%s  %s  "+format, args...)
 }
 
 func logError(format string, v ...interface{}) {
-	args := []interface{}{color.New(color.FgRed).Sprint(time.Now().Format("2006-01-02 15:04:05")), "❌"}
-	args = append(args, v...)
-	log.Printf("%s %s "+format, args...)
+	if !debugMode {
+		return
+	}
+	prefix := color.New(color.FgRed, color.Bold).Sprint("❌ ERROR  ")
+	ts := color.New(color.FgHiBlack).Sprint(time.Now().Format("15:04:05"))
+	args := append([]interface{}{ts, prefix}, v...)
+	log.Printf("%s  %s  "+format, args...)
+}
+
+func userError(format string, v ...interface{}) {
+	color.New(color.FgRed, color.Bold).Fprintf(os.Stderr, "❌ "+format+"\n", v...)
+}
+
+// For HTTP request/response logs, add color to method, path, and status
+func logRequest(method, path, sourceIP string) {
+	methodColor := color.New(color.FgMagenta, color.Bold).Sprint(method)
+	pathColor := color.New(color.FgCyan).Sprint(path)
+	sourceColor := color.New(color.FgHiBlack).Sprint(sourceIP)
+	logSuccess("Request: %s %s (from %s)", methodColor, pathColor, sourceColor)
+}
+
+func logResponse(status int, statusText string) {
+	var statusColor *color.Color
+	switch {
+	case status >= 200 && status < 300:
+		statusColor = color.New(color.FgGreen, color.Bold)
+	case status >= 400 && status < 500:
+		statusColor = color.New(color.FgYellow, color.Bold)
+	case status >= 500:
+		statusColor = color.New(color.FgRed, color.Bold)
+	default:
+		statusColor = color.New(color.FgWhite)
+	}
+	logSuccess("Response: %s %s", statusColor.Sprintf("%d", status), statusText)
 }
 
 // --- Main tunnel logic (unchanged) ---
 func connectAndServe(hostname, local, server string, preserveClientIP bool, authToken string) (string, error) {
-	logInfo("Attempting to connect to server at %s", server)
+	logInfo("Connecting to server...")
 	conn, err := net.Dial("tcp", server)
 	if err != nil {
-		logError("TCP connection to %s failed: %v", server, err)
+		if debugMode {
+			logError("TCP connection to %s failed: %v", server, err)
+		} else {
+			userError("Could not connect to server %s. Check your network and server address.", server)
+		}
 		return "", fmt.Errorf("failed to connect to server: %w", err)
 	}
 	defer func() {
@@ -238,13 +289,17 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 		conn.Close()
 	}()
 
-	logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
+	// logInfo("Connected to server at %s. Registering with hostname request: '%s'", server, hostname)
 	conn.SetDeadline(time.Time{})
 
-	logInfo("Establishing smux session...")
+	// logInfo("Establishing smux session...")
 	session, err := smux.Client(conn, nil)
 	if err != nil {
-		logError("Failed to create smux session: %v", err)
+		if debugMode {
+			logError("Failed to create smux session: %v", err)
+		} else {
+			userError("Could not establish secure tunnel session.")
+		}
 		return hostname, fmt.Errorf("failed to create smux session: %w", err)
 	}
 	defer func() {
@@ -252,10 +307,14 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 		session.Close()
 	}()
 
-	logInfo("Opening first stream for authentication...")
+	logInfo("Authenticating...")
 	authStream, err := session.OpenStream()
 	if err != nil {
-		logError("Failed to open auth stream: %v", err)
+		if debugMode {
+			logError("Failed to open auth stream: %v", err)
+		} else {
+			userError("Could not authenticate with server. Check your token.")
+		}
 		return hostname, fmt.Errorf("failed to open auth stream: %w", err)
 	}
 
@@ -265,26 +324,42 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	}
 	encoded, err := protocol.EncodeProtocolAuthMessage(authMsg)
 	if err != nil {
-		logError("Failed to encode auth message: %v", err)
+		if debugMode {
+			logError("Failed to encode auth message: %v", err)
+		} else {
+			userError("Internal error encoding authentication message.")
+		}
 		authStream.Close()
 		return hostname, fmt.Errorf("failed to encode auth message: %w", err)
 	}
 	if _, err := authStream.Write(encoded); err != nil {
-		logError("Failed to send auth message: %v", err)
+		if debugMode {
+			logError("Failed to send auth message: %v", err)
+		} else {
+			userError("Could not send authentication to server.")
+		}
 		authStream.Close()
 		return hostname, fmt.Errorf("failed to send auth message: %w", err)
 	}
 
 	respHeader := make([]byte, 4)
 	if _, err := io.ReadFull(authStream, respHeader); err != nil {
-		logError("Failed to read auth response header: %v", err)
+		if debugMode {
+			logError("Failed to read auth response header: %v", err)
+		} else {
+			userError("No response from server during authentication.")
+		}
 		authStream.Close()
 		return hostname, fmt.Errorf("failed to read auth response header: %w", err)
 	}
 	respLen := binary.BigEndian.Uint32(respHeader)
 	respPayload := make([]byte, respLen)
 	if _, err := io.ReadFull(authStream, respPayload); err != nil {
-		logError("Failed to read auth response payload: %v", err)
+		if debugMode {
+			logError("Failed to read auth response payload: %v", err)
+		} else {
+			userError("No response from server during authentication.")
+		}
 		authStream.Close()
 		return hostname, fmt.Errorf("failed to read auth response payload: %w", err)
 	}
@@ -293,20 +368,24 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	respStr := string(respPayload)
 	if len(respStr) >= 3 && respStr[:3] == "OK:" {
 		assignedHostname := respStr[3:]
-		logSuccess("Authenticated. Assigned hostname: %s", assignedHostname)
+		logSuccess("Authenticated")
 		fmt.Println()
 		color.Green("✓ Tunnel established")
 		fmt.Printf("%s https://%s %s %s\n",
 			color.GreenString("✓ Forwarding"),
-			assignedHostname,
+			color.CyanString(assignedHostname),
 			color.GreenString("->"),
-			color.CyanString(local),
+			local,
 		)
 		color.Green("✓ Ready for connections")
-		logInfo("Tunnel established and ready for connections on https://%s", assignedHostname)
+		// logInfo("Tunnel established and ready for connections on https://%s", assignedHostname)
 		hostname = assignedHostname
 	} else {
-		logError("Authentication failed: %s", respStr)
+		if debugMode {
+			logError("Authentication failed: %s", respStr)
+		} else {
+			userError("Authentication failed: %s", respStr)
+		}
 		color.Red("❌ Authentication failed: %s", respStr)
 		return hostname, fmt.Errorf("authentication failed: %s", respStr)
 	}
@@ -314,60 +393,70 @@ func connectAndServe(hostname, local, server string, preserveClientIP bool, auth
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
-			logError("Failed to accept stream: %v", err)
+			if debugMode {
+				logError("Failed to accept stream: %v", err)
+			} else {
+				userError("Lost connection to server. Please try reconnecting.")
+			}
 			return hostname, fmt.Errorf("failed to accept stream: %w", err)
 		}
-		logInfo("Accepted new stream from server. Handling HTTP request...")
+		// logInfo("Accepted new stream from server. Handling HTTP request...")
 		go handleStream(stream, local, preserveClientIP)
 	}
 }
 
 func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 	defer func() {
-		logInfo("Closed stream for local service %s", local)
+		// logInfo("Closed stream for local service %s", local)
 		stream.Close()
 	}()
 
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(stream, header); err != nil {
-		logError("Error reading stream header: %v", err)
+		// logError("Error reading stream header: %v", err)
 		return
 	}
 	reqLen := binary.BigEndian.Uint32(header)
 	reqBytes := make([]byte, reqLen)
 	if _, err := io.ReadFull(stream, reqBytes); err != nil {
-		logError("Error reading stream request: %v", err)
+		// logError("Error reading stream request: %v", err)
 		return
 	}
 
 	req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(reqBytes)))
 	if err != nil {
-		logError("Error parsing HTTP request: %v", err)
+		if debugMode {
+			logError("Error parsing HTTP request: %v", err)
+		}
 		return
 	}
 
 	clientIP := req.Header.Get("X-Forwarded-For")
 	remoteAddrStr := req.RemoteAddr
-	logInfo("Handling HTTP request for %s (client IP: %s, remote: %s)", req.URL.Path, clientIP, remoteAddrStr)
+	// logInfo("Handling HTTP request for %s (client IP: %s, remote: %s)", req.URL.Path, clientIP, remoteAddrStr)
 	req.RequestURI = ""
 	req.URL.Scheme = "http"
 	req.URL.Host = local
 
-	if preserveClientIP && clientIP != "" {
-		logInfo("Preserving client IP: %s", clientIP)
-	}
+	// if preserveClientIP && clientIP != "" {
+	// 	logInfo("Preserving client IP: %s", clientIP)
+	// }
 
 	if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
 		sourceIP := clientIP
 		if sourceIP == "" {
 			sourceIP = remoteAddrStr
 		}
-		logSuccess("Request: %s %s (from %s)", req.Method, req.URL.Path, sourceIP)
+		logRequest(req.Method, req.URL.Path, sourceIP)
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		logError("Local forward failed: %v", err)
+		if debugMode {
+			logError("Local forward failed: %v", err)
+		} else {
+			userError("Failed to forward request to your local service.")
+		}
 		resp = &http.Response{
 			StatusCode: http.StatusBadGateway,
 			Body:       io.NopCloser(strings.NewReader("Failed to forward to local service")),
@@ -377,7 +466,7 @@ func handleStream(stream net.Conn, local string, preserveClientIP bool) {
 		}
 	} else {
 		if !strings.Contains(req.URL.Path, "/_next/webpack-hmr") {
-			logSuccess("Response: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+			logResponse(resp.StatusCode, http.StatusText(resp.StatusCode))
 		}
 	}
 
