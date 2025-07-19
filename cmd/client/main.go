@@ -45,7 +45,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.ngopen/config.yaml)")
 	rootCmd.PersistentFlags().String("hostname", "AUTO", "Subdomain to register or 'AUTO' to let server generate one")
 	rootCmd.PersistentFlags().String("local", "", "Local service to forward to")
-	rootCmd.PersistentFlags().String("server", "tunnel.n.sbn.lol:9000", "Tunnel server address")
+	rootCmd.PersistentFlags().String("server", "connect.n.sbn.lol:9000", "Tunnel server address")
 	rootCmd.PersistentFlags().Duration("reconnect-delay", 5*time.Second, "Delay between reconnection attempts")
 	rootCmd.PersistentFlags().Bool("preserve-ip", true, "Preserve original client IP in X-Forwarded-For header")
 	rootCmd.PersistentFlags().String("auth", "", "Authentication token for server")
