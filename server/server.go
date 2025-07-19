@@ -1,5 +1,5 @@
 // server/main.go
-package main
+package server
 
 import (
 	"encoding/binary"
@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/heysubinoy/ngopen/protocol"
-	"github.com/heysubinoy/ngopen/server"
 
 	"github.com/xtaci/smux"
 )
@@ -20,10 +19,10 @@ import (
 func authenticate(stream net.Conn) (string, bool) {
 	msg, err := protocol.DecodeProtocolAuthMessage(stream)
 	if err != nil {
-		server.LogError("Failed to decode auth message: %v", err)
+		LogError("Failed to decode auth message: %v", err)
 		return "", false
 	}
-	if !server.IsValidToken(msg.AuthToken) {
+	if !IsValidToken(msg.AuthToken) {
 		resp := "FAIL:Invalid token"
 		respHeader := make([]byte, 4)
 		binary.BigEndian.PutUint32(respHeader, uint32(len(resp)))
@@ -32,7 +31,7 @@ func authenticate(stream net.Conn) (string, bool) {
 	}
 	assigned := msg.Hostname
 	if assigned == "AUTO" || assigned == "" {
-		assigned = server.GenerateHostname()
+		assigned = GenerateHostname()
 	} else {
 		resp := "FAIL: Hostname is not allowed"
 		respHeader := make([]byte, 4)
@@ -47,47 +46,47 @@ func authenticate(stream net.Conn) (string, bool) {
 	return assigned, true
 }
 
-func startTunnelListener(registry *server.TunnelRegistry) {
+func StartTunnelListener(registry *TunnelRegistry) {
 	ln, err := net.Listen("tcp", ":9000")
 	if err != nil {
-		server.LogError("Tunnel listen error:", err)
+		LogError("Tunnel listen error:", err)
 	}
-	server.LogInfo("Listening for tunnel clients on :9000…")
+	LogInfo("Listening for tunnel clients on :9000…")
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			server.LogError("Accept error:", err)
+			LogError("Accept error:", err)
 			continue
 		}
 		go func(c net.Conn) {
 			session, err := smux.Server(c, nil)
 			if err != nil {
-				server.LogError("smux session error:", err)
+				LogError("smux session error:", err)
 				c.Close()
 				return
 			}
 			// Use the first stream for authentication only
 			authStream, err := session.AcceptStream()
 			if err != nil {
-				server.LogError("Failed to accept auth stream:", err)
+				LogError("Failed to accept auth stream:", err)
 				session.Close()
 				return
 			}
 			assignedHostname, ok := authenticate(authStream)
 			authStream.Close()
 			if !ok {
-				server.LogError("Authentication failed, closing session")
+				LogError("Authentication failed, closing session")
 				session.Close()
 				return
 			}
-			client := &server.Client{
+			client := &Client{
 				Conn:    c,
 				Session: session,
 				Name:    assignedHostname,
 			}
 			registry.Add(assignedHostname, client)
-			server.LogInfo("Tunnel client '%s' connected.", assignedHostname)
+			LogInfo("Tunnel client '%s' connected.", assignedHostname)
 			<-session.CloseChan()
 			registry.Remove(assignedHostname)
 		}(conn)
@@ -95,7 +94,7 @@ func startTunnelListener(registry *server.TunnelRegistry) {
 }
 
 // startHTTPServer starts an HTTP server that, on each request, opens a new smux stream.
-func startHTTPServer(registry *server.TunnelRegistry) {
+func StartHTTPServer(registry *TunnelRegistry) {
 	devMode := os.Getenv("NGOPEN_MODE") == "DEV"
 	addr := ":8080"
 	if devMode {
@@ -111,7 +110,7 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 
 		// Filter out hot module reload chatter.
 		if !strings.Contains(r.URL.Path, "/_next/webpack-hmr") {
-			server.LogInfo("Request: %s %s", r.Method, r.URL.Path)
+			LogInfo("Request: %s %s", r.Method, r.URL.Path)
 		}
 
 		tunnelClient, ok := registry.Get(target)
@@ -123,7 +122,7 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 		// Open a new stream for this HTTP request.
 		stream, err := tunnelClient.Session.OpenStream()
 		if err != nil {
-			server.LogError("Failed to open smux stream:", err)
+			LogError("Failed to open smux stream:", err)
 			registry.Remove(target)
 			http.Error(w, "Tunnel stream open failed", http.StatusBadGateway)
 			return
@@ -132,17 +131,17 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 
 		// Write the request over the stream.
 		stream.SetWriteDeadline(time.Now().Add(1 * time.Minute))
-		if err := server.WriteFramedRequest(stream, r); err != nil {
-			server.LogError("Failed to write to tunnel stream:", err)
+		if err := WriteFramedRequest(stream, r); err != nil {
+			LogError("Failed to write to tunnel stream:", err)
 			// Only remove client if the session is broken, not on per-request error
 			// registry.Remove(target)
 			http.Error(w, "Tunnel write failed", http.StatusBadGateway)
 			return
 		}
 		stream.SetReadDeadline(time.Now().Add(1 * time.Minute))
-		resp, err := server.ReadFramedResponse(stream, r)
+		resp, err := ReadFramedResponse(stream, r)
 		if err != nil {
-			server.LogError("Failed to read from tunnel stream:", err)
+			LogError("Failed to read from tunnel stream:", err)
 			// Only remove client if the session is broken, not on per-request error
 			// registry.Remove(target)
 			http.Error(w, "Tunnel response failed", http.StatusBadGateway)
@@ -168,7 +167,7 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 	}
 
 	if devMode {
-		server.LogInfo("HTTP server (dev mode) listening on %s", addr)
+		LogInfo("HTTP server (dev mode) listening on %s", addr)
 		log.Fatal(serve.ListenAndServe())
 	} else {
 		// certFile := os.Getenv("NGOPEN_CERT_FILE")
@@ -180,13 +179,7 @@ func startHTTPServer(registry *server.TunnelRegistry) {
 		// 	keyFile = "/etc/letsencrypt/live/n.sbn.lol/privkey.pem"
 		// }
 		//Will be handled by the reverse proxy in production
-		server.LogInfo("HTTPS server (prod mode) listening on %s", addr)
+		LogInfo("HTTPS server (prod mode) listening on %s", addr)
 		log.Fatal(serve.ListenAndServe())
 	}
-}
-
-func main() {
-	registry := server.NewTunnelRegistry()
-	go startTunnelListener(registry)
-	startHTTPServer(registry)
 }

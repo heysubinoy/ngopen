@@ -1,5 +1,5 @@
 // client/main.go
-package main
+package client
 
 import (
 	"bufio"
@@ -35,7 +35,7 @@ func init() {
 	log.SetPrefix("")
 }
 
-func main() {
+func Main() {
 	rootCmd := &cobra.Command{
 		Use:   "ngopen",
 		Short: "Expose your local service to the internet via a secure tunnel",
