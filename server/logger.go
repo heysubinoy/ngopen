@@ -15,6 +15,10 @@ const (
 
 var logLevel = INFO
 
+func init() {
+	SetLogLevelFromEnv()
+}
+
 func SetLogLevelFromEnv() {
 	lvl := os.Getenv("NGOPEN_LOG_LEVEL")
 	switch lvl {

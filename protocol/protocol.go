@@ -45,6 +45,11 @@ func EncodeProtocolAuthMessage(msg ProtocolAuthMessage) ([]byte, error) {
 	return append(header, []byte(payload)...), nil
 }
 
+// MaxAuthMessageSize caps the auth frame a client may send. The auth exchange
+// happens before the client is trusted, so the length prefix must never be
+// used to size an allocation unchecked.
+const MaxAuthMessageSize = 4 << 10 // 4 KiB
+
 func DecodeProtocolAuthMessage(r io.Reader) (ProtocolAuthMessage, error) {
 	var msg ProtocolAuthMessage
 	header := make([]byte, 4)
@@ -52,6 +57,9 @@ func DecodeProtocolAuthMessage(r io.Reader) (ProtocolAuthMessage, error) {
 		return msg, fmt.Errorf("failed to read auth header: %w", err)
 	}
 	length := binary.BigEndian.Uint32(header)
+	if length > MaxAuthMessageSize {
+		return msg, fmt.Errorf("auth message too large: %d bytes (max %d)", length, MaxAuthMessageSize)
+	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return msg, fmt.Errorf("failed to read auth payload: %w", err)
