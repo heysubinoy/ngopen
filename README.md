@@ -1,135 +1,130 @@
-# npopen
+# ngopen
 
-`npopen` is a lightweight, Go-based reverse tunneling and registry server. It enables developers to securely expose local services to the internet using ephemeral hostnames and access tokens—without punching holes in firewalls or forwarding ports.
-
-Think of it like a minimalistic, self-hostable version of `ngrok`, built with transparency and performance in mind.
-
----
-
-## ✨ Features
-
-- 🔐 **Token-based access** – Secure connections with pluggable validation
-- 🌐 **Ephemeral hostname generation** – Unique identifiers per tunnel
-- 📦 **Service registry** – Lightweight in-memory tracking for active tunnels
-- 🧩 **Stream framing protocol** – Reliable raw TCP stream handling
-- 🧵 **Concurrent stream parsing** – Efficient routing & control handling
-
----
-
-## 📂 Project Structure
+A self-hosted reverse tunnel, written in Go. Run `ngopen` next to a service on your laptop and it gets a public HTTPS hostname, without opening ports or touching your firewall. Think of it as a small, readable ngrok you can run on your own server.
 
 ```text
-.
-├── framing.go             # TCP stream framing/deframing logic
-├── go.mod                 # Module definition
-├── go.sum                 # Dependency checksums
-├── hostname-generator.go # Random hostname generation logic
-├── main.go                # Main entrypoint; server logic
-├── parser.go              # Incoming stream parser
-├── registry.go            # Registry for managing tunnel endpoints
-└── token-validator.go     # Token validation logic
+$ ngopen --local localhost:3000 --auth <token>
+✓ Tunnel established
+✓ Forwarding https://brave-otter-4821.n.sbn.lol -> localhost:3000
+✓ Ready for connections
 ```
 
----
+## How it works
 
-## 🚀 Getting Started
+```text
+                        public internet                         your machine
+ ┌─────────┐  HTTPS   ┌──────────────┐  HTTP   ┌──────────────┐   one TCP conn,   ┌──────────────┐  HTTP  ┌───────────────┐
+ │ browser │ ───────▶ │ reverse proxy│ ──────▶ │ ngopen server│ ◀════════════════ │ ngopen client│ ─────▶ │ localhost:3000│
+ └─────────┘          │  (TLS, *.dom)│  :8080  │              │  many smux streams│              │        └───────────────┘
+                      └──────────────┘         └──────────────┘       :9000       └──────────────┘
+```
 
-### 🧾 Prerequisites
+1. **Dial out, not in.** The client opens a single outbound TCP connection to the server on `:9000`. Because the connection starts from inside your network, no inbound port needs to be open.
+2. **Multiplex.** That connection is wrapped in an [smux](https://github.com/xtaci/smux) session. Every proxied HTTP request gets its own lightweight stream, so many requests share one connection without blocking each other.
+3. **Authenticate on stream 0.** The first stream carries the auth handshake: the client sends its token and requested hostname, and the server validates the token against an external auth service and assigns a hostname such as `brave-otter-4821.n.sbn.lol`.
+4. **Route by Host header.** The server keeps an in-memory registry of `hostname → session`. When a request arrives on `:8080`, it looks up the `Host` header, opens a new stream to the matching client, and forwards the request.
+5. **Replay locally.** The client reads the request off the stream, replays it against your local service, and writes the response back on the same stream.
 
-- Go 1.20 or later
+If the connection drops, the client retries automatically after a configurable delay.
 
-### ⚙️ Installation
+## Wire protocol
+
+Every message is a length-prefixed frame:
+
+```text
+┌────────────────────┬──────────────────────────┐
+│ length (uint32 BE) │ payload (length bytes)    │
+└────────────────────┴──────────────────────────┘
+```
+
+| Stream | Direction | Payload |
+|---|---|---|
+| auth (first stream) | client → server | `AUTHTOKEN:<token>\nHOSTNAME:<name or AUTO>\n` |
+| auth (first stream) | server → client | `OK:<assigned-hostname>` or `FAIL:<reason>` |
+| one per request | server → client | raw HTTP/1.1 request (`http.Request.Write`) |
+| one per request | client → server | raw HTTP/1.1 response |
+
+Because the auth frame arrives before the client is trusted, its declared length is capped at 4 KiB. A client claiming a larger frame is rejected before any memory is allocated for it.
+
+## Quick start
+
+Requires Go 1.22+.
 
 ```bash
-git clone https://github.com/heysubinoy/npopen.git
-cd npopen/server
-go build -o npopen
+git clone https://github.com/heysubinoy/ngopen.git
+cd ngopen
+go build -o ngopen .
 ```
 
-### 🔧 Usage
-
-Start the server:
+### Server
 
 ```bash
-./npopen
+export API_VALIDATE_URL=https://auth.example.com/validate   # token validation endpoint
+export NGOPEN_HOSTNAME_SUFFIX=.tunnel.example.com          # wildcard domain pointed at this box
+./ngopen server
 ```
 
-By default, the server listens on port `80`.
+The server listens on `:9000` for tunnel clients and `:8080` for public HTTP traffic. In production, put a reverse proxy such as Caddy or nginx in front of `:8080` to terminate TLS for `*.tunnel.example.com`.
 
----
+### Client
 
-## 🧠 How It Works
+```bash
+./ngopen --local localhost:3000 --auth <token> --server tunnel.example.com:9000
+```
 
-1. A client connects and provides an access token.
-2. Token is validated via logic in `token-validator.go`.
-3. A hostname is generated (`hostname-generator.go`) and registered (`registry.go`).
-4. Data is framed (`framing.go`), parsed (`parser.go`), and routed accordingly.
+Save your settings so you don't have to pass them every time:
 
-This makes it possible to expose a local service like `localhost:3000` over the internet with zero config.
+```bash
+./ngopen config set auth-key <token>
+./ngopen config set server tunnel.example.com:9000
+./ngopen config list
+```
 
----
+## Configuration
 
-## 🔒 Token Validation
+**Server (environment variables)**, see [`.env.example`](.env.example):
 
-Custom token logic is implemented in `token-validator.go`.
+| Variable | Purpose | Default |
+|---|---|---|
+| `API_VALIDATE_URL` | Endpoint the server POSTs `{"key": "<token>"}` to. It must reply `200` with `{"valid": true}`. | required |
+| `NGOPEN_HOSTNAME_SUFFIX` | Domain suffix for generated hostnames | `.n.sbn.lol` |
+| `NGOPEN_LOG_LEVEL` | `DEBUG`, `INFO`, `WARN`, `ERROR` | `INFO` |
+| `NGOPEN_MODE` | `DEV` for local development | prod |
 
-You can adapt it for:
-- JWT-based auth
-- API keys
-- Temporary session tokens
-- Or even OAuth if you’re feeling fancy
+**Client (flags, or `NGOPEN_*` environment variables)**:
 
----
+| Flag | Purpose | Default |
+|---|---|---|
+| `--local` | Local service to expose | required |
+| `--auth` | Auth token | required |
+| `--server` | Tunnel server address | `connect.n.sbn.lol:9000` |
+| `--hostname` | Hostname to request, or `AUTO` | `AUTO` |
+| `--reconnect-delay` | Wait between reconnect attempts | `5s` |
+| `--preserve-ip` | Pass the visitor's IP through in `X-Forwarded-For` | `true` |
+| `--debug` | Verbose logs | `false` |
 
-## 🌐 Hostname Generator
+## Design notes
 
-Hostnames are generated dynamically—think `cool-weasel-3941.npopen.dev`. This avoids collisions and helps identify tunnel connections.
+- **Fails closed on auth.** Token validation treats an unset URL, a network error, a timeout (5 s), a non-200 response, or an unreadable body as *invalid*. Tokens are never written to logs.
+- **Per-request deadlines.** Each proxied request has a 1-minute read/write deadline on its stream, so one slow local handler can't hold a stream open forever.
+- **Per-request errors stay per-request.** A failed request returns `502` to that caller only. The client's session is torn down only when the stream itself can't be opened.
 
-Modify `hostname-generator.go` to customize the format or use vanity names.
+## Testing
 
----
+```bash
+go test -race ./protocol/ ./server/
+```
 
-## 🛠 Configuration
+The tests cover the auth frame round trip and the oversized-frame and truncated-frame errors, a full request/response round trip through the tunnel framing over an in-memory connection, hostname generation, and token validation against a fake auth service.
 
-You can tweak:
-- Listening port (in `main.go`)
-- Token strategy (`token-validator.go`)
-- Hostname format (`hostname-generator.go`)
-- Persistence layer for registry (`registry.go`)
+## Limitations and roadmap
 
-Future versions will include a config file or ENV support.
+- [ ] TLS on the client ↔ server tunnel link. Public traffic is HTTPS via the reverse proxy, but the `:9000` link is currently plain TCP.
+- [ ] Stream request and response bodies instead of buffering them whole
+- [ ] Hostname reclaim on reconnect, and reserved custom hostnames, tied to the auth token. Currently the server only accepts `AUTO`.
+- [ ] WebSocket and raw TCP tunnels
+- [ ] Metrics and a small dashboard
 
----
+## Author
 
-## 🧪 Testing
-
-Currently under development. For now, testing is manual via CLI clients. Formal test suite coming soon™.
-
----
-
-## 📦 Planned
-
-- [x] TLS support (Let's Encrypt or cert mount)
-- [ ] Web dashboard for monitoring
-- [x] Client CLI for easy tunnel creation
-- [ ] Support for HTTP/WebSocket tunnels
-- [ ] Docker deployment support
-
----
-
-## 🤝 Contributing
-
-Contributions are very welcome!
-
-Fork the repo → create a branch → submit a PR.  
-Bug reports, feature suggestions, and memes are appreciated.
-
----
-
-## 👋 Author
-
-Made with ☕ and frustration by [Subinoy Biswas](https://subinoy.me)
-
----
-
-> npopen: Not Production-ready. Probably Open. Definitely Nerdy.
+Built by [Subinoy Biswas](https://subinoy.me). There's a longer write-up on [Medium](https://heysubinoy.medium.com).
