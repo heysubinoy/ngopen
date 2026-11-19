@@ -1,0 +1,13 @@
+# Local environment (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Build output
+/ngopen
+/ngopen.exe
+*.exe
+*.test
+*.out
+nohup.out
+*.log
